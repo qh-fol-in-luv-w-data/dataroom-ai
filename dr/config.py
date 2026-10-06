@@ -36,7 +36,10 @@ class Settings:
     max_files: int = int(_env("DR_MAX_FILES", "8"))
     rerank_top: int = int(_env("DR_RERANK_TOP", "40"))
     nli_threshold: float = float(_env("DR_NLI_THRESHOLD", "0.5"))
-    structure_on_scans: bool = _env("DR_STRUCTURE", "1") == "1"
+    # OCR: PaddleOCR-VL-1.6 served by mlx-vlm on the Apple GPU; PP-OCRv5 latin as fallback.
+    ocr_server_url: str = _env("DR_OCR_SERVER", "http://127.0.0.1:8111/")
+    ocr_vl_model: str = _env("DR_OCR_VL_MODEL", str(Path.home() / ".paddlex/official_models/PaddleOCR-VL-1.6"))
+    ocr_engine: str = _env("DR_OCR_ENGINE", "vl")  # vl | ppocr
 
     @property
     def tenant_dir(self) -> Path:
