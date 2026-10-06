@@ -8,7 +8,7 @@ Ngày 06/10/2026. Bản này hiện thực hóa phần quyền và RAG của k�
 - Màn hình "RAG của tôi truy xuất được đến đâu" liệt kê đúng phạm vi của từng người.
 - Bảng kịch bản tái hiện được các tình huống thu hồi quyền trong kế hoạch, và cho thấy AI chặn đúng lúc.
 - Bộ test tự động chứng minh không rò rỉ: mọi người × mọi chuỗi đánh dấu.
-- Chạy trên MacBook M3 Pro, 18 GB RAM, đĩa trống khoảng 6,5 GB. Không tải thêm model, không dùng Docker.
+- Chạy trên MacBook M3 Pro, 18 GB RAM. Không dùng Docker. LLM và embedding dùng model Ollama có sẵn. Chỉ tải thêm model Paddle, reranker và NLI.
 
 ## 2. Ràng buộc tài nguyên
 
@@ -16,11 +16,14 @@ Ngày 06/10/2026. Bản này hiện thực hóa phần quyền và RAG của k�
 |---|---|---|
 | LLM | Ollama `qwen2.5:7b` (đã có trên máy) | Khoảng 6 GB RAM, hỗ trợ tiếng Việt, không tốn thêm đĩa. Đặt tên model trong cấu hình để đổi được |
 | Embedding | Ollama `bge-m3` (đã có) | Đa ngôn ngữ |
-| Reranker, NLI | Bỏ | Cần torch, tốn vài GB đĩa. Kiểm căn cứ bằng khớp câu trích nguyên văn |
-| OCR | Tesseract `vie` + `eng` (đã có) | Nhẹ |
-| Parser | pypdfium2, pypdf, python-docx, openpyxl, python-pptx, thư viện chuẩn `email`, BeautifulSoup | Không dùng Docling/PaddleOCR (vài GB) |
+| Reranker | `BAAI/bge-reranker-v2-m3` qua sentence-transformers, chạy trên MPS/CPU | Theo kế hoạch tổng |
+| NLI (kiểm căn cứ) | `MoritzLaurer/mDeBERTa-v3-base-xnli-multilingual-nli-2mil7` | Có tiếng Việt; chỉ là tín hiệu phụ, cổng cứng vẫn là khớp câu trích nguyên văn |
+| OCR | PaddleOCR 3.x: PP-OCRv5 det + rec latin (`lang=vi`) | Theo yêu cầu; máy đã có cache model |
+| Parser PDF và ảnh | PaddleOCR PP-StructureV3: bố cục, bảng, OCR | Theo yêu cầu. PDF có lớp chữ tốt thì lấy chữ gốc, chỉ dùng PP-StructureV3 cho bố cục và bảng |
+| Parser Office, email | python-docx, openpyxl, python-pptx, thư viện chuẩn `email`, BeautifulSoup; ảnh nhúng chuyển cho PaddleOCR | Paddle không đọc trực tiếp các định dạng này |
+| Tesseract | Chỉ làm dự phòng khi Paddle lỗi | |
 | CSDL | PostgreSQL 15 (Homebrew), thư mục dữ liệu nằm trong project, socket unix | Có RLS. Không có pgvector: vector lưu `real[]` |
-| Dung lượng | venv ≤ 0,6 GB; dữ liệu ≤ 1,5 GB; Postgres ≤ 0,5 GB | |
+| Dung lượng | Đĩa trống khoảng 26 GB. venv (paddle + torch) ≤ 3 GB; model HF khoảng 3,5 GB; dữ liệu ≤ 1,5 GB; Postgres ≤ 0,5 GB | |
 
 ## 3. Kiến trúc
 
@@ -83,15 +86,17 @@ Mọi thành phần chạy trong một tiến trình FastAPI (fake_tenant gắn 
 
 - **Truy xuất:**
   - lấy BM25 (rank_bm25, chỉ trên các dòng RLS cho phép, tính riêng cho từng phân vùng) và cosine;
-  - gộp bằng RRF, gom theo file, lấy tối đa 8 file;
+  - gộp bằng RRF, lấy 40 đoạn đầu, rerank bằng bge-reranker-v2-m3;
+  - gom theo file, lấy tối đa 8 file;
   - kiểm tra trực tiếp từng file.
 - **Sinh câu trả lời:** `qwen2.5:7b` trả JSON `{claims:[{text, citations:[{chunk_id, quote}]}]}`. Đoạn văn được bọc trong `<untrusted_document>`.
 - **Kiểm chứng:**
   - `chunk_id` phải thuộc tập đã kiểm tra;
   - câu trích phải có trong đoạn sau khi chuẩn hóa;
-  - con số trong ý phải xuất hiện trong câu trích.
+  - con số trong ý phải xuất hiện trong câu trích;
+  - NLI (câu trích ⇒ ý) cho một điểm entailment. Dưới ngưỡng thì ý bị đánh dấu "chưa chắc" trong giao diện. NLI không bao giờ là lý do duy nhất để chấp nhận một ý.
 
-  Ý không đạt bị bỏ. Không còn ý nào thì trả một câu từ chối trung tính.
+  Ý không qua các bước tất định bị bỏ. Không còn ý nào thì trả một câu từ chối trung tính.
 - **Trả lời:** một khối duy nhất, sau khi kiểm xong.
 - **Nhật ký:** bảng hash nối chuỗi, có trang kiểm chuỗi.
 
@@ -143,7 +148,7 @@ Mọi thành phần chạy trong một tiến trình FastAPI (fake_tenant gắn 
 ## 10. Ngoài phạm vi
 
 - Graph/Entra thật.
-- Reranker, NLI, Bản 2 (đếm và liên kết chéo).
+- Bản 2 (đếm và liên kết chéo).
 - Bộ phân loại injection học máy.
 - Neo WORM vào SharePoint.
 - Triển khai nhiều máy.

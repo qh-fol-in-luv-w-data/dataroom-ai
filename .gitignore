@@ -6,3 +6,4 @@ data/tenant/files/
 data/public/
 logs/
 .pytest_cache/
+logs_install.txt
