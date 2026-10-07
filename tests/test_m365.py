@@ -91,9 +91,15 @@ class FakeGraph:
             page = int(query.get("token", "0"))
             return 200, {"value": self.delta_pages[page] if page < len(self.delta_pages) else [],
                          "@odata.deltaLink": f"https://graph.microsoft.com/v1.0/drives/{DRIVE}/root/delta?token={page + 1}"}
+        if path == f"drives/{DRIVE}/root/children":
+            return 200, {"value": list(self.files.values())}
         m = re.fullmatch(rf"drives/{re.escape(DRIVE)}/items/([^/]+)(/.*)?", path)
         if m:
             iid, rest = m.group(1), m.group(2) or ""
+            if rest == "/versions":
+                return 200, {"value": [{"id": "1.0"}, {"id": "2.0"}]}
+            if rest == "/content" and query.get("format") == "pdf":
+                return 302, {"location": "https://westus-dm2.download.example/x.pdf"}
             if rest == "/permissions":
                 return 200, {"value": self.perms[iid]}
             if rest == "/listItem":
@@ -138,6 +144,9 @@ class FakeGraph:
         if url.host == "login.microsoftonline.com":
             return self.token(req)
         auth = req.headers.get("authorization", "").removeprefix("Bearer ")
+        if "/_api/web/" in url.path and not url.path.endswith("/users"):
+            assert auth == "app|https://host.example/.default"
+            return httpx.Response(200, json={"value": []})
         if url.path.endswith("/_api/web/sitegroups/getbyid(5)/users"):
             assert auth == "app|https://host.example/.default"
             return httpx.Response(200, json={"value": [{"LoginName": x} for x in self.sp_group]})
@@ -154,6 +163,8 @@ class FakeGraph:
                 out.append({"id": r["id"], "status": st, "body": body})
             return httpx.Response(200, json={"responses": out})
         st, body = self.graph(req.method, path, {k: v for k, v in url.params.items()}, auth)
+        if st == 302:
+            return httpx.Response(302, headers={"location": body["location"]})
         return httpx.Response(st, content=body) if isinstance(body, bytes) else httpx.Response(st, json=body)
 
 
@@ -262,3 +273,21 @@ def test_mutations_are_refused(m365):
     _, tenant, _, _ = m365
     with pytest.raises(NotImplementedError):
         tenant.remove_member("GA", "u1")
+
+
+def test_integration_probe_runs_against_graph(m365):
+    """scripts/m365_probe.py tests 1, 2 and 8 end to end on the HTTP fake."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("probe", "scripts/m365_probe.py")
+    probe = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(probe)
+    _, tenant, _, _ = m365
+    f = probe.test1(tenant)
+    assert probe.R["1"]["status"] == "PASS" and probe.R["1"]["versions"] == 2
+    assert probe.R["1"]["format_pdf_redirect_host"] == "westus-dm2.download.example"
+    probe.test2(tenant, f)
+    assert probe.R["2"]["status"] == "PASS" and probe.R["2"]["rest_getchanges"] == 200
+    probe.test8(tenant, f, n=5)
+    assert probe.R["8"]["status"] == "PASS"
+    probe.test3(tenant, f, None, None)
+    assert probe.R["3"]["status"] == "SKIP"

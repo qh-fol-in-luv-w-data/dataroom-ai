@@ -203,10 +203,42 @@ Tìm kiếm chạy ngay trong PostgreSQL (`dr/core/pgindex.py`), với quyền `
 
 Tìm kiếm vẫn dưới 1 giây ở mọi trường hợp. Bước chậm nhất của một câu trả lời vẫn là LLM (10–16 giây trên laptop). Nhóm nhỏ chậm hơn nhóm trung bình vì HNSW phải bỏ qua nhiều đoạn không có quyền. Bản production nên **dùng chỉ mục riêng theo site**, vì data room chia site theo nhóm nhà đầu tư, và **chạy Postgres native trên máy chủ**.
 
+## Chạy trên Microsoft 365 thật (`DR_TENANT=m365`)
+
+Cùng connector, cùng 4 cổng quyền và cùng luồng trả lời như bản demo. Chỉ phần tenant giả lập được thay bằng `dr/m365/`:
+
+| Thành phần | Làm gì |
+|---|---|
+| `tenant.py` – `GraphTenant` | Đọc delta của từng thư viện tài liệu, kèm quyền và cột `AI_Use` (gọi theo lô `$batch`). Nhóm SharePoint được giãn ra thành người dùng và nhóm Entra qua REST. Link "Anyone" và link toàn tổ chức không bao giờ được tính là quyền. Danh sách thành viên nhóm, app role và trạng thái tài khoản được chụp lại mỗi 60 giây rồi so với lần trước. Live check dùng **OBO bằng token của chính người hỏi**; không có token thì đóng an toàn. Không bao giờ ghi gì vào tenant |
+| `auth.py` | Lấy token app-only bằng chứng chỉ (JWT ký RS256) và token OBO. Không cần MSAL Python |
+| `entra_auth.py` | Gateway kiểm token Entra: chữ ký qua JWKS, issuer, audience, hạn dùng, scope `Chat.Use`, role `DataRoom.AIAdmin` |
+| Giao diện | Đăng nhập bằng MSAL.js (đăng nhập Microsoft, xác thực đa yếu tố theo chính sách tenant). Link trích dẫn mở thẳng `webUrl` trên SharePoint. Không có ảnh cắt trang scan, và OCR không lưu ảnh trang xuống đĩa |
+| `scripts/m365_probe.py` | Chạy 9 phép thử tích hợp (kế hoạch §9.1): tự động phép thử 1, 2, 3 (người thử tự đăng nhập bằng device code), 5, 8; đo X (thời gian thu hồi); in checklist cho phép thử 4, 6, 7, 9 |
+
+Các bước:
+
+```bash
+.venv/bin/python scripts/m365_probe.py --example-config > data/m365.json   # điền ID app, chứng chỉ, site, nhóm
+make m365-probe      # 9 phép thử trên site thử → logs/m365_probe-*.json
+make run-m365        # chạy AI core trên SharePoint/Entra thật
+```
+
+Cần quản trị tenant chuẩn bị (kế hoạch §2.1):
+- 4 app registration:
+  - content/acl reader: `Sites.Selected`;
+  - directory reader;
+  - `dataroom-ai-api`: expose scope `Chat.Use`, app role, quyền ủy quyền Files.Read cho OBO;
+  - SPA.
+- Cấp quyền `Sites.Selected` trên site thử.
+- Cột `AI_Use` trong thư viện.
+- Nhóm DR-INV-*.
+
+Đã kiểm bằng một Graph giả lập ở tầng HTTP (`tests/test_m365.py`). **Chưa chạy trên tenant thật**: phải có thông tin tenant mới chạy được.
+
 ## Giới hạn so với production
 
 - SharePoint và Entra là bản giả lập. Connector được viết để sau này thay bằng Graph thật (delta, `/permissions`, OBO).
-- Đăng nhập là token HMAC giả lập, thay cho MSAL và Entra.
+- Chế độ demo đăng nhập bằng token HMAC. Chế độ `m365` đã có MSAL/Entra nhưng chưa chạy trên tenant thật. MSAL.js đang tải từ CDN; production nên tự host kèm SRI.
 - Chỉ mục HNSW đang là một chỉ mục chung. Ở quy mô lớn, người chỉ thấy vài site nên dùng chỉ mục HNSW riêng theo site (xem mục Thử tải).
 - Hạn mức để trong bộ nhớ một process; production dùng kho dùng chung ở Gateway.
 - Không có sandbox gVisor cho parser, không có ClamAV/YARA. Kiểm tra an toàn file ở mức tối thiểu.
