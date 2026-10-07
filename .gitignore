@@ -8,3 +8,4 @@ logs/
 .pytest_cache/
 logs_install.txt
 .DS_Store
+data/tenant/DEMO_ACCOUNTS.md

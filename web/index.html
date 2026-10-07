@@ -3,93 +3,16 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Data Room AI · Demo</title>
+<title>Data Room AI · Sao Mai IPO</title>
 <link rel="stylesheet" href="/static/style.css">
+<script>
+  try { document.documentElement.dataset.theme = localStorage.getItem("dr-theme") ||
+    (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"); } catch (e) {}
+</script>
 </head>
 <body>
-<header class="topbar">
-  <div class="brand">
-    <div class="logo">DR</div>
-    <div>
-      <div class="brand-title">Data Room AI</div>
-      <div class="brand-sub">CTCP Năng lượng Sao Mai · IPO 2026 · demo chạy local</div>
-    </div>
-  </div>
-  <div class="identity">
-    <label for="who">Đăng nhập với danh tính</label>
-    <select id="who"></select>
-    <div id="who-meta" class="who-meta"></div>
-  </div>
-  <div class="pills" id="pills"></div>
-</header>
-
-<nav class="tabs" id="tabs">
-  <button data-tab="chat" class="active">Hỏi đáp</button>
-  <button data-tab="scope">RAG của tôi truy xuất được đến đâu</button>
-  <button data-tab="matrix" class="admin">Ma trận quyền</button>
-  <button data-tab="scenarios" class="admin">Kịch bản demo</button>
-  <button data-tab="audit" class="admin">Nhật ký</button>
-</nav>
-
-<main>
-  <!-- CHAT -->
-  <section id="tab-chat" class="tab active">
-    <div class="chat-wrap">
-      <div id="thread" class="thread">
-        <div class="empty">
-          <h2>Hỏi về tài liệu trong Data Room</h2>
-          <p>Trợ lý chỉ dùng những tài liệu mà danh tính đang chọn <b>được mở trên SharePoint</b> và <b>được phép dùng AI</b>.
-            Mỗi câu trả lời đi qua 4 cổng quyền và được kiểm chứng trích dẫn trước khi hiển thị.</p>
-        </div>
-      </div>
-      <div class="suggest" id="suggest"></div>
-      <form id="ask" class="ask">
-        <select id="scope-site" title="Giới hạn phạm vi (nhân viên/cố vấn)"><option value="">Mọi site được phép</option></select>
-        <input id="q" placeholder="Ví dụ: Doanh thu năm 2025 là bao nhiêu?" autocomplete="off">
-        <button type="submit" id="send">Hỏi</button>
-      </form>
-    </div>
-  </section>
-
-  <!-- SCOPE -->
-  <section id="tab-scope" class="tab">
-    <div class="scope-head">
-      <div id="scope-summary" class="cards"></div>
-      <div class="filters" id="scope-filters"></div>
-    </div>
-    <div id="scope-tree" class="tree"></div>
-  </section>
-
-  <!-- MATRIX -->
-  <section id="tab-matrix" class="tab">
-    <p class="hint">Mỗi ô: <b>số file AI dùng được</b> / số file mở được trên SharePoint. Ô có viền cam: AI đang chặn
-      trước SharePoint (thu hồi đang chờ SharePoint áp dụng). Bấm vào một dòng để xem chi tiết phạm vi của người đó.</p>
-    <div id="matrix"></div>
-    <div id="matrix-detail" class="tree"></div>
-  </section>
-
-  <!-- SCENARIOS -->
-  <section id="tab-scenarios" class="tab">
-    <div class="scen-grid">
-      <div class="scen-list" id="scen-list"></div>
-      <div class="scen-side">
-        <div class="card" id="scen-result"><h3>Kết quả</h3><p class="muted">Chọn một kịch bản.</p></div>
-        <div class="card"><h3>Trạng thái trực tiếp</h3><div id="live"></div></div>
-      </div>
-    </div>
-  </section>
-
-  <!-- AUDIT -->
-  <section id="tab-audit" class="tab">
-    <div class="audit-bar">
-      <button id="verify-chain">Kiểm tra chuỗi hash</button>
-      <span id="verify-out"></span>
-      <button id="reload-audit" class="ghost">Tải lại</button>
-    </div>
-    <div id="audit"></div>
-  </section>
-</main>
-
+<div id="app"></div>
+<div class="toasts" id="toasts" aria-live="polite"></div>
 <script src="/static/app.js"></script>
 </body>
 </html>
