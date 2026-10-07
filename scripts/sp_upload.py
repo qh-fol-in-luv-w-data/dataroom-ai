@@ -13,7 +13,8 @@
   "Mở trên SharePoint" then opens the real file.
 
 Needs an app registration in your tenant (no admin consent): public client flows enabled,
-delegated permissions Files.ReadWrite.All + Sites.ReadWrite.All (user consent).
+delegated permissions Files.ReadWrite.All, Sites.ReadWrite.All and Sites.Manage.All
+(Manage: create the library and the AI_Use column).
 Usage:
   .venv/bin/python scripts/sp_upload.py --tenant <tenant id or domain> --client-id <app id> \\
       --site https://<tenant>.sharepoint.com/sites/<site> [--library "DataRoom AI Demo"] [--dry-run]
@@ -37,7 +38,7 @@ from dr.m365.graph import Graph, GraphError  # noqa: E402
 TEN = ROOT / "data" / "tenant"
 LINKS = TEN / "sharepoint_links.json"
 CACHE = ROOT / "data" / ".sp_token.json"
-SCOPES = "Files.ReadWrite.All Sites.ReadWrite.All offline_access"
+SCOPES = "Files.ReadWrite.All Sites.ReadWrite.All Sites.Manage.All offline_access"
 CHOICES = ["Allowed", "OnPremOnly", "Excluded"]
 SMALL = 4 * 1024 * 1024
 
@@ -85,7 +86,7 @@ class DeviceLogin:
         raise SystemExit("Hết thời gian đăng nhập")
 
 
-def site_and_drive(g: Graph, site_url: str, library: str | None = None) -> tuple[str, str, str]:
+def site_and_drive(g: Graph, site_url: str, library: str | None = None) -> tuple[str, str, str, str]:
     """The site's default document library, or the library named `library` (created if missing:
     lets you use a separate library on a site you already own when you cannot create sites)."""
     u = urlparse(site_url)
@@ -93,7 +94,7 @@ def site_and_drive(g: Graph, site_url: str, library: str | None = None) -> tuple
     if not library:
         drive = g.get(f"sites/{site['id']}/drive")
         lst = g.get(f"sites/{site['id']}/drive/list", params={"$select": "id,displayName"})
-        return site["id"], drive["id"], lst["id"]
+        return site["id"], drive["id"], lst["id"], ""
     lists = [x for x in g.pages(f"sites/{site['id']}/lists", params={"$select": "id,displayName,list"})
              if x.get("displayName") == library]
     if lists:
@@ -101,23 +102,32 @@ def site_and_drive(g: Graph, site_url: str, library: str | None = None) -> tuple
     else:
         r = g.request("POST", f"sites/{site['id']}/lists",
                       json={"displayName": library, "list": {"template": "documentLibrary"}})
+        if r.status_code == 403:
+            print(f"  ! Không được tạo thư viện '{library}' (403): dùng thư mục '{library}/' trong thư viện mặc định")
+            drive = g.get(f"sites/{site['id']}/drive")
+            lst = g.get(f"sites/{site['id']}/drive/list", params={"$select": "id"})
+            return site["id"], drive["id"], lst["id"], f"{library}/"
         if r.status_code not in (200, 201):
             raise GraphError(r.status_code, r.text, f"create library {library}")
         lst = r.json()
     drive = g.get(f"sites/{site['id']}/lists/{lst['id']}/drive")
-    return site["id"], drive["id"], lst["id"]
+    return site["id"], drive["id"], lst["id"], ""
 
 
-def ensure_ai_use_column(g: Graph, site_id: str, list_id: str) -> None:
+def ensure_ai_use_column(g: Graph, site_id: str, list_id: str) -> bool:
     cols = [c["name"] for c in g.pages(f"sites/{site_id}/lists/{list_id}/columns", params={"$select": "name"})]
     if "AI_Use" in cols:
-        return
+        return True
     r = g.request("POST", f"sites/{site_id}/lists/{list_id}/columns", json={
         "name": "AI_Use", "displayName": "AI_Use", "description": "Cho phép AI core dùng file này",
         "choice": {"allowTextEntry": False, "choices": CHOICES, "displayAs": "dropDownMenu"},
         "defaultValue": {"value": "Excluded"}})
+    if r.status_code == 403:
+        print("  ! Không được tạo cột AI_Use (403, thiếu Sites.Manage.All): vẫn tải file, AI_Use giữ ở AI core")
+        return False
     if r.status_code not in (200, 201):
         raise GraphError(r.status_code, r.text, "create AI_Use column")
+    return True
 
 
 def upload(g: Graph, drive_id: str, rel: str, data: bytes) -> dict:
@@ -147,10 +157,27 @@ def main(argv=None, http: httpx.Client | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--tenant", required=True)
     ap.add_argument("--client-id", required=True)
-    ap.add_argument("--site", required=True, help="https://<tenant>.sharepoint.com/sites/<site>")
+    ap.add_argument("--site", help="https://<tenant>.sharepoint.com/sites/<site>")
+    ap.add_argument("--list-sites", action="store_true", help="sign in and list the sites you can use")
     ap.add_argument("--library", help="upload into this document library (created if missing) instead of the default one")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args(argv)
+    if a.list_sites:
+        http = http or httpx.Client(timeout=60, follow_redirects=True)
+        g = Graph(DeviceLogin(a.tenant, a.client_id, http).token, http)
+        seen = {}
+        for path in ("me/followedSites", "sites?search=*&$top=50"):
+            try:
+                for x in g.pages(path):
+                    seen.setdefault(x.get("webUrl"), x.get("displayName") or x.get("name"))
+            except GraphError as e:
+                print(f"  ({path}: {e.status})")
+        print(f"\n{len(seen)} site:")
+        for url, name in sorted(seen.items(), key=lambda kv: str(kv[1])):
+            print(f"  {name}  →  {url}")
+        return 0
+    if not a.site:
+        ap.error("--site is required (or use --list-sites)")
     t = json.loads((TEN / "tenant.json").read_text(encoding="utf-8"))
     items = [i for i in t["items"] if not i.get("malware") and not i.get("encrypted")]
     skipped = [i["name"] for i in t["items"] if i.get("malware") or i.get("encrypted")]
@@ -161,8 +188,8 @@ def main(argv=None, http: httpx.Client | None = None) -> int:
     http = http or httpx.Client(timeout=120, follow_redirects=True)
     login = DeviceLogin(a.tenant, a.client_id, http)
     g = Graph(login.token, http)
-    site_id, drive_id, list_id = site_and_drive(g, a.site, a.library)
-    ensure_ai_use_column(g, site_id, list_id)
+    site_id, drive_id, list_id, prefix = site_and_drive(g, a.site, a.library)
+    has_col = ensure_ai_use_column(g, site_id, list_id)
     links = json.loads(LINKS.read_text()) if LINKS.exists() else {}
     done = 0
     for n, it in enumerate(items, 1):
@@ -170,12 +197,13 @@ def main(argv=None, http: httpx.Client | None = None) -> int:
         prev = links.get(it["id"])
         if prev and prev.get("size") == len(data) and prev.get("site") == a.site:
             continue
-        rel = f"{it['site']}/{it['path']}/{it['name']}".replace("//", "/")
+        rel = f"{prefix}{it['site']}/{it['path']}/{it['name']}".replace("//", "/")
         di = upload(g, drive_id, rel, data)
-        r = g.request("PATCH", f"drives/{drive_id}/items/{di['id']}/listItem/fields",
-                      json={"AI_Use": it.get("ai_use") or "Excluded"})
-        if r.status_code != 200:
-            raise GraphError(r.status_code, r.text, f"AI_Use {rel}")
+        if has_col:
+            r = g.request("PATCH", f"drives/{drive_id}/items/{di['id']}/listItem/fields",
+                          json={"AI_Use": it.get("ai_use") or "Excluded"})
+            if r.status_code != 200:
+                raise GraphError(r.status_code, r.text, f"AI_Use {rel}")
         links[it["id"]] = {"web_url": di["webUrl"], "drive_item_id": di["id"], "size": len(data), "site": a.site}
         done += 1
         if done % 25 == 0:
