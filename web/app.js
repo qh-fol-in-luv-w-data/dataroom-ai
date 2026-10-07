@@ -97,7 +97,33 @@ let TOKEN = store.get("dr-token");
 let ME = null;
 let STATUS_CACHE = null;
 
+// Sign-in mode: "demo" (password) or "m365" (Entra ID via MSAL, token for the AI API)
+let AUTH = { mode: "demo" }, MSAL = null;
+const loadScript = (src) => new Promise((ok, bad) => {
+  const s = document.createElement("script"); s.src = src; s.onload = ok; s.onerror = bad; document.head.appendChild(s);
+});
+async function initAuth() {
+  try { AUTH = await (await fetch("/api/auth/config")).json(); } catch { AUTH = { mode: "demo" }; }
+  if (AUTH.mode !== "m365") return;
+  await loadScript("https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.28.1/lib/msal-browser.min.js");
+  MSAL = new msal.PublicClientApplication({
+    auth: { clientId: AUTH.client_id, authority: AUTH.authority, redirectUri: location.origin + "/" },
+    cache: { cacheLocation: "sessionStorage" },
+  });
+  await MSAL.initialize();
+  const res = await MSAL.handleRedirectPromise();
+  const acc = (res && res.account) || MSAL.getAllAccounts()[0];
+  if (acc) MSAL.setActiveAccount(acc);
+}
+async function msalToken() {
+  const account = MSAL.getActiveAccount();
+  if (!account) return null;
+  try { return (await MSAL.acquireTokenSilent({ scopes: [AUTH.scope], account })).accessToken; }
+  catch { await MSAL.acquireTokenRedirect({ scopes: [AUTH.scope], account }); return null; }
+}
+
 async function api(path, opts = {}) {
+  if (MSAL && !path.startsWith("/api/auth/")) TOKEN = await msalToken();
   const r = await fetch(path, {
     ...opts,
     headers: { "Content-Type": "application/json", ...(TOKEN ? { Authorization: "Bearer " + TOKEN } : {}), ...(opts.headers || {}) },
@@ -112,6 +138,7 @@ async function api(path, opts = {}) {
 const post = (path, body) => api(path, { method: "POST", body });
 
 function logout(msg) {
+  if (MSAL && MSAL.getActiveAccount()) { MSAL.logoutRedirect({ postLogoutRedirectUri: location.origin + "/" }); return; }
   TOKEN = null; ME = null; store.del("dr-token");
   CHAT.length = 0;
   location.hash = "";
@@ -121,6 +148,7 @@ function logout(msg) {
 // ------------------------------------------------------------------ login
 async function renderLogin(message) {
   document.title = "Đăng nhập · Data Room AI";
+  if (AUTH.mode === "m365") return renderLoginMicrosoft(message);
   $("#app").innerHTML = `
   <div class="login">
     <section class="login-art" aria-hidden="true">
@@ -178,6 +206,25 @@ async function renderLogin(message) {
     $$("#demo-list button").forEach((b) => b.onclick = () => { $("#email").value = b.dataset.email; $("#password").focus(); });
   } catch { $("#demo-list").innerHTML = '<div class="muted small">Không tải được danh sách.</div>'; }
   $("#email").focus();
+}
+
+function renderLoginMicrosoft(message) {
+  $("#app").innerHTML = `
+  <div class="login">
+    <section class="login-art" aria-hidden="true">
+      <div class="login-logo"><span class="logo-mark">SM</span> Data Room AI</div>
+      <div><h1>Trợ lý AI cho Data Room IPO, đúng quyền của từng nhà đầu tư.</h1>
+        <p class="lead">Đăng nhập bằng tài khoản được mời vào Data Room trên SharePoint.</p></div>
+      <div class="login-foot">Quyền truy cập do SharePoint và Entra ID quyết định</div>
+    </section>
+    <section class="login-panel"><div class="login-card">
+      <h2>Đăng nhập</h2>
+      <div class="muted">Dùng tài khoản Microsoft (Entra ID) mà Ban IPO đã mời. Có thể được yêu cầu xác thực đa yếu tố.</div>
+      ${message ? `<div class="alert info" style="margin-top:16px">${esc(message)}</div>` : ""}
+      <button class="btn primary" id="ms-login" style="height:42px;width:100%;margin-top:20px">${icon("lock")} Đăng nhập bằng tài khoản Microsoft</button>
+    </div></section>
+  </div>`;
+  $("#ms-login").onclick = () => MSAL.loginRedirect({ scopes: [AUTH.scope] });
 }
 
 // ------------------------------------------------------------------ shell + router
@@ -363,7 +410,7 @@ function renderAnswer(r, i) {
       <blockquote>${esc(c.quote)}</blockquote>
       ${c.crop ? `<figure class="crop"><img loading="lazy" alt="Vùng tương ứng trên bản scan gốc" src="/crop/${encodeURIComponent(c.item_id)}?t=${encodeURIComponent(TOKEN)}&page=${encodeURIComponent(c.crop.page)}${c.crop.box ? "&box=" + c.crop.box.join(",") : ""}"><figcaption>${c.crop.box ? "Vùng gốc trên bản scan (đã nắn thẳng)" : "Trang scan gốc (đã nắn thẳng)"}</figcaption></figure>` : ""}
       <div class="cite-foot"><span class="chip">${esc(SITE_LABEL[c.site_id] || c.site_id)}</span>${c.ocr ? '<span class="chip info" title="PaddleOCR-VL">văn bản nhận dạng từ bản scan</span>' : ""}
-        <span style="flex:1"></span><a href="/open/${encodeURIComponent(c.item_id)}?t=${encodeURIComponent(TOKEN)}" target="_blank" rel="noopener">Mở trên SharePoint ${icon("ext")}</a></div>
+        <span style="flex:1"></span><a href="${c.web_url ? esc(c.web_url) : `/open/${encodeURIComponent(c.item_id)}?t=${encodeURIComponent(TOKEN)}`}" target="_blank" rel="noopener">Mở trên SharePoint ${icon("ext")}</a></div>
     </div>`).join("")}</div>`;
   return head + claims + cites + trace;
 }
@@ -709,4 +756,5 @@ async function pageSystem(page) {
 }
 
 // ------------------------------------------------------------------ start
-if (TOKEN) boot(); else renderLogin();
+initAuth().then(() => { if (MSAL ? MSAL.getActiveAccount() : TOKEN) boot(); else renderLogin(); })
+  .catch(() => renderLogin("Không tải được thư viện đăng nhập Microsoft. Kiểm tra kết nối mạng."));

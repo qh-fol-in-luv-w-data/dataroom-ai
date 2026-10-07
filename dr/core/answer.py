@@ -274,7 +274,8 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
                 cites.append({"n": cite_index[key], "item_id": p["item_id"], "name": p["name"],
                               "locator": p["locator"], "ocr": p["ocr"], "site_id": p["site_id"],
                               "quote": quote, "chunk_id": c.chunk_id,
-                              "crop": crop_for(p["ocr_page"], quote) if p["ocr"] else None})
+                              "crop": crop_for(p["ocr_page"], quote) if p["ocr"] and settings.tenant_mode != "m365" else None,
+                              "web_url": getattr(tenant, "web_url", lambda _: None)(p["item_id"])})
             refs.append(cite_index[key])
         # numbers in the claim or its quotes that only the VLM read (second OCR reader disagreed)
         doubt = sorted({n for c in cl.citations for n in sel_passages[c.chunk_id].get("ocr_doubt", [])

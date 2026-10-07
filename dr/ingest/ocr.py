@@ -128,7 +128,8 @@ def _page_images(path: str) -> list[Image.Image]:
 def _cache(key: str, n: int, img: Image.Image, lines) -> None:
     d = settings.data_dir / "cache" / "ocr" / key
     d.mkdir(parents=True, exist_ok=True)
-    img.convert("RGB").save(d / f"p{n}.jpg", quality=85)
+    if settings.tenant_mode != "m365":      # production keeps only line boxes, never page images (plan §4.4)
+        img.convert("RGB").save(d / f"p{n}.jpg", quality=85)
     (d / f"p{n}.json").write_text(json.dumps([{"text": ln.text, "score": round(ln.score, 3), "box": ln.box}
                                               for ln in lines], ensure_ascii=False))
 

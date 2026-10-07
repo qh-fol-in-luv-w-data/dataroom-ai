@@ -161,3 +161,13 @@ def test_chat_rate_limited(client):
     h = login(client, "inv-a1")
     codes = [client.post("/api/chat", headers=h, json={"question": "phí thu xếp"}).status_code for _ in range(10)]
     assert codes[:8] == [200] * 8 and codes[8] == 429
+
+
+def test_auth_config_demo_mode(client):
+    assert client.get("/api/auth/config").json() == {"mode": "demo"}
+
+
+def test_citations_carry_no_web_url_in_demo(client):
+    h = login(client, "inv-a1")
+    r = client.post("/api/chat", headers=h, json={"question": "phí thu xếp nhóm A"}).json()
+    assert not r["refused"] and all(c["web_url"] is None for c in r["citations"])
