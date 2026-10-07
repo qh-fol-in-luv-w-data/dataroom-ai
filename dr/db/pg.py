@@ -79,5 +79,5 @@ def reset_all() -> None:
     """Wipe all demo data (keeps schema)."""
     with admin() as c:
         c.execute("TRUNCATE chunks, items, grants, memberships, user_roles, users_mirror, revocations, "
-                  "deny_list, feed_status, item_reader, audit, sites RESTART IDENTITY CASCADE")
+                  "deny_list, feed_status, item_reader, audit, sites, site_stats, term_stats RESTART IDENTITY CASCADE")
         c.commit()

@@ -2,6 +2,7 @@
 and a "SharePoint viewer" endpoint that serves originals only if SharePoint allows it."""
 from __future__ import annotations
 
+import io
 import logging
 import mimetypes
 import queue
@@ -21,6 +22,7 @@ from dr.config import settings
 from dr.connector.sync import Connector
 from dr.core import answer as answer_mod
 from dr.core.index import SearchIndex
+from dr.core.pgindex import make_index
 from dr.db import pg
 from dr.gateway import accounts, auth, scenarios
 from dr.gateway import admin as admin_mod
@@ -34,7 +36,7 @@ WEB = settings.root / "web"
 class State:
     tenant: FakeTenant
     connector: Connector
-    index: SearchIndex
+    index: object
     deps: answer_mod.Deps | None = None
     stop = threading.Event()
     ingest_q: "queue.Queue[str]" = queue.Queue()
@@ -68,7 +70,9 @@ def _ingest_worker():
 
 def _on_changes(ch: dict):
     if ch["items_changed"] or ch["ctag_changed"] or ch["items_deleted"]:
-        S.index.refresh()          # removes non-current / deleted chunks right away
+        if not getattr(S.index, "in_db", False):
+            S.index.refresh()      # in-memory index: drop non-current / deleted chunks right away
+                                   # (in Postgres, RLS already hides them inside the search query)
         S.ingest_q.put("go")
 
 
@@ -89,7 +93,7 @@ async def lifespan(app: FastAPI):
     S.tenant = FakeTenant()
     S.connector = Connector(S.tenant)
     S.connector.full_resync()
-    S.index = SearchIndex()
+    S.index = make_index()
     S.index.refresh()
     S.stop.clear()
     threading.Thread(target=S.connector.run_forever, args=(S.stop, _on_changes), daemon=True).start()
@@ -354,6 +358,40 @@ def open_file(item_id: str, t: str = Query(...)):
     inline = p.suffix.lower() in (".pdf", ".png", ".jpg", ".jpeg", ".html", ".txt", ".md", ".csv", ".eml")
     return FileResponse(p, media_type=mt, filename=S.tenant.items[item_id]["name"],
                         content_disposition_type="inline" if inline else "attachment")
+
+
+@app.get("/crop/{item_id}")
+def crop(item_id: str, t: str = Query(...), page: str = Query(...), box: str | None = None):
+    """Region of a cleaned scan page, for checking an OCR'd quote against the original.
+    Same rule as /open: SharePoint (sp_can_read) decides, and the page must belong to a
+    current chunk of this very item."""
+    claims = auth.verify(t)
+    if not claims:
+        raise HTTPException(401, "Phiên không hợp lệ")
+    if claims["oid"] == auth.ADMIN_OID or not S.tenant.sp_can_read(claims["oid"], item_id):
+        raise HTTPException(403, "SharePoint: bạn không có quyền mở tài liệu này")
+    with pg.admin() as c:
+        ok = c.execute("SELECT 1 FROM chunks WHERE item_id=%s AND ocr_page=%s AND is_current LIMIT 1",
+                       (item_id, page)).fetchone()
+    key, _, n = page.partition("/p")
+    got = ocr.cached_page(key, int(n)) if ok and n.isdigit() else None
+    if not got:
+        raise HTTPException(404, "Không có ảnh trang")
+    from PIL import Image
+    img = Image.open(got[0])
+    if box:
+        try:
+            x0, y0, x1, y1 = (int(v) for v in box.split(","))
+        except ValueError:
+            raise HTTPException(400, "box không hợp lệ")
+        x0, y0 = max(0, x0), max(0, y0)
+        x1, y1 = min(img.width, x1), min(img.height, y1)
+        if x1 - x0 > 10 and y1 - y0 > 10:
+            img = img.crop((x0, y0, x1, y1))
+    img.thumbnail((1400, 1400))
+    buf = io.BytesIO()
+    img.convert("RGB").save(buf, "JPEG", quality=85)
+    return Response(buf.getvalue(), media_type="image/jpeg", headers={"Cache-Control": "private, max-age=300"})
 
 
 @app.get("/api/health")

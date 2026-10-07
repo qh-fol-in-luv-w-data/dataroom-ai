@@ -9,3 +9,5 @@ logs/
 logs_install.txt
 .DS_Store
 data/tenant/DEMO_ACCOUNTS.md
+data/eval/
+data/cache/

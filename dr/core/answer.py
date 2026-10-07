@@ -87,6 +87,36 @@ def _refuse(oid, question, message, trace, kind="refusal", extra=None) -> dict:
             "audit_seq": seq}
 
 
+def crop_for(page_ref: str | None, quote: str) -> dict | None:
+    """Region of the cleaned scan page that holds the quote (lines read by the 2nd OCR reader)."""
+    if not page_ref or "/p" not in page_ref:
+        return None
+    from unidecode import unidecode
+    from dr.ingest.ocr import cached_page
+    key, _, n = page_ref.partition("/p")
+    got = cached_page(key, int(n)) if n.isdigit() else None
+    if not got:
+        return None
+    _, lines = got
+    from difflib import SequenceMatcher
+    flat = lambda t: "".join(ch for ch in unidecode(t).lower() if ch.isalnum())
+    q = flat(quote)
+
+    def overlaps(line: str) -> bool:      # the line lies in the quote, or the quote in the line
+        f = flat(line)
+        if len(f) < 4 or not q:
+            return False
+        m = SequenceMatcher(None, f, q, autojunk=False).find_longest_match(0, len(f), 0, len(q))
+        return m.size >= max(4, 0.7 * min(len(f), len(q)))
+
+    boxes = [ln["box"] for ln in lines if overlaps(ln["text"])]
+    if not boxes:
+        return {"page": page_ref, "box": None}
+    x0, y0 = min(b[0] for b in boxes), min(b[1] for b in boxes)
+    x1, y1 = max(b[2] for b in boxes), max(b[3] for b in boxes)
+    return {"page": page_ref, "box": [max(0, x0 - 30), max(0, y0 - 30), x1 + 30, y1 + 30]}
+
+
 def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], question: str,
         deps: Deps, scope_site: str | None = None) -> dict:
     trace = Trace()
@@ -100,15 +130,24 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
         return _refuse(oid, question, msg, trace)
 
     # ---- gate 1 (+3): RLS over the mirror; revoked group paths already excluded
-    allowed = gates.allowed_chunks(oid, scope_site)
+    if getattr(index, "in_db", False):
+        n_files, n_allowed = index.allowed_scope(oid, scope_site)
+    else:
+        allowed = gates.allowed_chunks(oid, scope_site)
+        n_files, n_allowed = len(set(allowed.values())), len(allowed)
     trace.add("Cổng 1+3 – RLS trên bản chép quyền (đã trừ tập thu hồi)", True,
-              allowed_chunks=len(allowed), allowed_files=len(set(allowed.values())))
-    if not allowed:
+              allowed_chunks=n_allowed, allowed_files=n_files)
+    if not n_allowed:
         return _refuse(oid, question, NEUTRAL_REFUSAL, trace)
 
     qvec = deps.embed_query(question) if deps.embed_query else None
-    hits = index.search(set(allowed), question, qvec, k=settings.rerank_top)
-    trace.add("Tìm kiếm lai BM25 + vector (chỉ trên id được phép)", True, hits=len(hits))
+    if getattr(index, "in_db", False):
+        hits, info = index.search_as(oid, question, qvec, k=settings.rerank_top, site=scope_site)
+        trace.add("Tìm kiếm lai BM25 + vector trong Postgres (RLS ngay trong câu truy vấn)", True,
+                  hits=len(hits), **info)
+    else:
+        hits = index.search(set(allowed), question, qvec, k=settings.rerank_top)
+        trace.add("Tìm kiếm lai BM25 + vector (chỉ trên id được phép)", True, hits=len(hits))
     passages = gates.fetch_passages(oid, [cid for cid, _ in hits])
     order = [cid for cid, _ in hits if cid in passages]
 
@@ -211,16 +250,21 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
             key = (p["item_id"], p["locator"])
             if key not in cite_index:
                 cite_index[key] = len(cites) + 1
+                quote = c.quote.replace("。", ".").replace("，", ",")
                 cites.append({"n": cite_index[key], "item_id": p["item_id"], "name": p["name"],
                               "locator": p["locator"], "ocr": p["ocr"], "site_id": p["site_id"],
-                              "quote": c.quote.replace("。", ".").replace("，", ","), "chunk_id": c.chunk_id})
+                              "quote": quote, "chunk_id": c.chunk_id,
+                              "crop": crop_for(p["ocr_page"], quote) if p["ocr"] else None})
             refs.append(cite_index[key])
-        claims_out.append({"text": cl.text, "refs": sorted(set(refs)), "nli": cl.nli,
-                           "uncertain": cl.nli is not None and cl.nli < settings.nli_threshold})
+        # numbers in the claim or its quotes that only the VLM read (second OCR reader disagreed)
+        doubt = sorted({n for c in cl.citations for n in sel_passages[c.chunk_id].get("ocr_doubt", [])
+                        if n in cl.text or n in c.quote})
+        claims_out.append({"text": cl.text, "refs": sorted(set(refs)), "nli": cl.nli, "ocr_doubt": doubt,
+                           "uncertain": bool(doubt) or (cl.nli is not None and cl.nli < settings.nli_threshold)})
     answer_text = "\n".join(c["text"] for c in claims_out)
     seq = audit.append(oid, "answer", {
         "question": question,
-        "allowed_chunks": len(allowed),
+        "allowed_chunks": n_allowed,
         "files_checked": len(chosen) + len(dropped_live),
         "files_dropped_live": len(dropped_live),
         "cited": [{"item_id": c["item_id"], "locator": c["locator"], "chunk_id": c["chunk_id"]} for c in cites],

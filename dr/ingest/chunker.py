@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from unidecode import unidecode
 
@@ -30,6 +30,8 @@ class Chunk:
     ordinal: int
     ocr: bool
     injection_flag: bool
+    doubt: list[str] = field(default_factory=list)   # OCR numbers in this chunk not confirmed by the 2nd reader
+    page_key: str | None = None                      # cleaned page image for citation crops
 
 
 def normalize(text: str) -> str:
@@ -97,4 +99,16 @@ def chunk(blocks: list[Block], max_chars: int = 800) -> list[Chunk]:
     flush()
     for i, c in enumerate(out):
         c.ordinal = i
+    # OCR provenance per locator: doubtful numbers that occur in the chunk, and the page image
+    prov: dict[str, tuple[set, str | None]] = {}
+    for b in blocks:
+        if b.ocr:
+            d, k = prov.setdefault(b.locator, (set(), b.meta.get("page_key")))
+            d.update(b.meta.get("doubt") or [])
+    for c in out:
+        if c.ocr:
+            for loc in c.locator.split(" – "):
+                d, k = prov.get(loc, (set(), None))
+                c.doubt += [n for n in sorted(d) if n in c.text and n not in c.doubt]
+                c.page_key = c.page_key or k
     return out

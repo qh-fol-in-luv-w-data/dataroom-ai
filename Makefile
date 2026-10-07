@@ -3,7 +3,7 @@ UV      ?= $(shell command -v uv || echo $(HOME)/.local/bin/uv)
 VL_DIR  := $(HOME)/.paddlex/official_models/PaddleOCR-VL-1.6
 PORT    ?= 8000
 
-.PHONY: setup models pg-start pg-stop ocr-server data public ingest run leak-test qa-eval test test-all reset-db
+.PHONY: setup models pgvector pg-start pg-stop ocr-server data accounts public ingest migrate-search run leak-test qa-eval hard-scans ocr-eval scale-test test test-all reset-db
 
 setup:            ## create venv + install dependencies
 	$(UV) venv --python 3.11 .venv
@@ -16,6 +16,10 @@ models:           ## pre-download PaddleOCR-VL, reranker, NLI; pull Ollama model
 	ollama pull qwen2.5:7b
 	ollama pull bge-m3
 
+pgvector:         ## build + install pgvector 0.8.7 into the Homebrew postgresql@15 (x86_64)
+	rm -rf $${TMPDIR:-/tmp}/pgvector && git clone -q --depth 1 --branch v0.8.7 https://github.com/pgvector/pgvector.git $${TMPDIR:-/tmp}/pgvector
+	cd $${TMPDIR:-/tmp}/pgvector && arch -x86_64 make install PG_CONFIG=/usr/local/opt/postgresql@15/bin/pg_config OPTFLAGS="" PG_SYSROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+
 pg-start:         ## start the project-local Postgres (unix socket in ./pgdata/sock)
 	$(PY) -c "from dr.db import pg; pg.ensure_cluster(); print('postgres ok')"
 
@@ -27,12 +31,19 @@ ocr-server:       ## PaddleOCR-VL-1.6 on the Apple GPU via mlx-vlm (keep running
 
 data:             ## generate the synthetic Sao Mai corpus (~500 files, all formats)
 	$(PY) scripts/gen_corpus.py --n 500 --seed 7 --out data/tenant
+	$(PY) scripts/seed_accounts.py
+
+accounts:         ## new random demo password (hashes in tenant.json, plain text in data/tenant/DEMO_ACCOUNTS.md)
+	$(PY) scripts/seed_accounts.py
 
 public:           ## download approved public IPO documents (see data/public_sources.json)
 	$(PY) scripts/fetch_public.py
 
 ingest:           ## sync permissions + parse/OCR/embed everything pending
 	$(PY) scripts/ingest.py --workers 3
+
+migrate-search:   ## one-off: fill pgvector/tsvector columns for chunks ingested before the switch
+	$(PY) scripts/migrate_pg_search.py
 
 run:              ## start the demo at http://localhost:$(PORT)
 	$(PY) -m uvicorn dr.gateway.app:app --host 127.0.0.1 --port $(PORT)
@@ -42,6 +53,16 @@ leak-test:        ## leak matrix on the live demo DB (every user x every marker 
 
 qa-eval:          ## end-to-end Q&A on the secret facts with the real LLM
 	$(PY) scripts/qa_eval.py
+
+hard-scans:       ## generate 40 hard scanned documents + truth (data/eval/hard_scans)
+	$(PY) scripts/gen_hard_scans.py --n 40
+
+ocr-eval:         ## OCR accuracy on the hard scans: raw vs cleaned, number cross-check (needs ocr-server)
+	$(PY) scripts/ocr_eval.py
+
+scale-test:       ## 1M-chunk load test of the in-database search (separate DB dataroom_scale, ~10 GB)
+	$(PY) scripts/scale_test.py load --n 1000000
+	$(PY) scripts/scale_test.py bench
 
 test:             ## fast tests (no LLM)
 	$(PY) -m pytest -q -m "not slow and not e2e"
