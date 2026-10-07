@@ -213,7 +213,7 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
                 cite_index[key] = len(cites) + 1
                 cites.append({"n": cite_index[key], "item_id": p["item_id"], "name": p["name"],
                               "locator": p["locator"], "ocr": p["ocr"], "site_id": p["site_id"],
-                              "quote": c.quote, "chunk_id": c.chunk_id})
+                              "quote": c.quote.replace("。", ".").replace("，", ","), "chunk_id": c.chunk_id})
             refs.append(cite_index[key])
         claims_out.append({"text": cl.text, "refs": sorted(set(refs)), "nli": cl.nli,
                            "uncertain": cl.nli is not None and cl.nli < settings.nli_threshold})
