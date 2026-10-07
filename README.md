@@ -100,9 +100,45 @@ scripts/        sinh dữ liệu, nạp, tải tài liệu công khai, ma trận
 docs/           spec và kế hoạch triển khai
 ```
 
+## Tìm kiếm trong Postgres và thử tải 1 triệu đoạn
+
+Tìm kiếm chạy ngay trong PostgreSQL (`dr/core/pgindex.py`), với quyền `app_query`. **RLS lọc ngay trong câu truy vấn tìm kiếm**, ứng dụng không bao giờ giữ danh sách id được phép.
+
+- **Vector:** pgvector 0.8.7, chỉ mục HNSW, kiểu `halfvec(1024)`.
+  - Người chỉ thấy ít dữ liệu (≤ 20 nghìn đoạn) dùng tìm vét cạn trên đúng các file của họ.
+  - Người thấy nhiều dữ liệu dùng HNSW với chế độ *iterative scan*, để bước lọc quyền không làm thiếu kết quả.
+- **BM25:** viết bằng SQL, thống kê tính riêng theo từng site.
+  - Ứng viên được chọn theo các từ hiếm nhất trong câu hỏi.
+  - Ứng viên lấy qua một hàm `SECURITY DEFINER`. Lý do: khi bật RLS, Postgres không được dùng chỉ mục GIN cho toán tử `@@`. Các id lấy ra vẫn được RLS lọc trong cùng câu SQL.
+- Tắt JIT cho `app_query`, vì JIT tốn khoảng 1 giây cho mỗi câu ngắn.
+- Biến `DR_SEARCH=memory` để quay lại chỉ mục trong RAM cũ.
+- Kiểm tra chéo với bản RAM cũ trên các câu hỏi demo: top-1 trùng 18–19/19 câu, top-10 trùng trung bình 9,4–9,6/10, không trả về id nào ngoài quyền.
+
+`make scale-test` dựng database riêng `dataroom_scale`, gồm 1.000.000 đoạn tổng hợp (ghép từ đoạn thật) và 22 site, rồi đo trên MacBook M3 Pro. Postgres ở đây là bản x86 chạy qua Rosetta, nên số đo là cận trên.
+
+| Bước nạp | Thời gian |
+|---|---|
+| Chép 1 triệu đoạn | 5,6 phút |
+| Chỉ mục GIN | 3,3 phút |
+| Chỉ mục HNSW | 6 phút |
+| Thống kê BM25 | 8,2 phút |
+| Dung lượng | 10 GB (HNSW 2,6 GB) |
+
+| Người dùng (phạm vi thấy) | Đoạn được thấy | Tìm kiếm p50 / p95 | Recall vector* |
+|---|---|---|---|
+| Nhân viên (100%) | 1.000.000 | 535 / 1.132 ms | 0,94 |
+| Nhà đầu tư lớn (38%) | 379.193 | 205 / 690 ms | 0,94 |
+| Nhóm trung bình (11%) | 110.865 | 163 / 573 ms | 0,93 |
+| Nhóm nhỏ (2,8%) | 28.633 | 511 / 813 ms | 0,96 |
+| Chỉ vài file được chia sẻ | 81 | 69 / 94 ms | 1,00 |
+
+\* Tỷ lệ kết quả HNSW gần bằng kết quả thứ 40 của tìm vét cạn (dung sai 0,005). Recall chặt là 0,75–0,83.
+
+Tìm kiếm vẫn dưới 1 giây ở mọi trường hợp. Bước chậm nhất của một câu trả lời vẫn là LLM (10–16 giây trên laptop). Nhóm nhỏ chậm hơn nhóm trung bình vì HNSW phải bỏ qua nhiều đoạn không có quyền. Bản production nên **dùng chỉ mục riêng theo site**, vì data room chia site theo nhóm nhà đầu tư, và **chạy Postgres native trên máy chủ**.
+
 ## Giới hạn so với production
 
 - SharePoint và Entra là bản giả lập. Connector được viết để sau này thay bằng Graph thật (delta, `/permissions`, OBO).
 - Đăng nhập là token HMAC giả lập, thay cho MSAL và Entra.
-- Chỉ mục giữ trong bộ nhớ, vector lưu dạng mảng trong Postgres (không có pgvector). Phù hợp quy mô demo vài chục nghìn đoạn.
+- Chỉ mục HNSW đang là một chỉ mục chung. Ở quy mô lớn, người chỉ thấy vài site nên dùng chỉ mục HNSW riêng theo site (xem mục Thử tải).
 - Không có sandbox gVisor cho parser, không có ClamAV/YARA. Kiểm tra an toàn file ở mức tối thiểu.

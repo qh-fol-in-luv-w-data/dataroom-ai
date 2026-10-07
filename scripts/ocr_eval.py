@@ -35,8 +35,10 @@ def digits(s: str) -> int:
     return sum(ch.isdigit() for ch in s)
 
 
-def run(limit: int | None, modes: list[str]) -> dict:
+def run(limit: int | None, modes: list[str], only: list[str] | None = None) -> dict:
     truth = json.loads((SET / "truth.json").read_text(encoding="utf-8"))["docs"][:limit]
+    if only:
+        truth = [d for d in truth if any(o in d["file"] for o in only)]
     if not ocr.vl_available():
         sys.exit("OCR server (PaddleOCR-VL) chưa chạy: make ocr-server")
     res: dict = {m: defaultdict(lambda: defaultdict(float)) for m in modes}
@@ -122,13 +124,15 @@ def main(argv=None) -> int:
     ap.add_argument("--limit", type=int)
     ap.add_argument("--modes", default="raw,clean")
     ap.add_argument("--report-only", action="store_true")
+    ap.add_argument("--only", help="comma-separated file name parts, e.g. hs-006,hs-012")
     a = ap.parse_args(argv)
     if a.report_only:
         report(json.loads(OUT.read_text()))
         return 0
-    data = run(a.limit, a.modes.split(","))
-    OUT.parent.mkdir(exist_ok=True)
-    OUT.write_text(json.dumps(data, ensure_ascii=False, indent=1))
+    data = run(a.limit, a.modes.split(","), a.only.split(",") if a.only else None)
+    if not a.only:
+        OUT.parent.mkdir(exist_ok=True)
+        OUT.write_text(json.dumps(data, ensure_ascii=False, indent=1))
     report(data)
     return 0
 

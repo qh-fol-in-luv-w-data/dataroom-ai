@@ -5,10 +5,11 @@ or stamped over. Each step is cheap and only fires when the page needs it:
 
 1. page detection + perspective correction (phone photos of a page on a desk)
 2. illumination flattening (shadows, folds, coffee stains, yellowed paper)
-3. salt-and-pepper removal (faxes)
-4. upscaling of low-resolution pages
-5. orientation 0/90/180/270 (text-box shape, then recognition confidence upright vs flipped)
-6. deskew (median angle of detected text lines)
+3. upscaling of low-resolution pages
+4. orientation 0/90/180/270 (text-box shape, then recognition confidence upright vs flipped)
+5. deskew (median angle of detected text lines)
+
+(No fax despeckling: it erases the 1–2 px separators inside numbers.)
 
 Then a second, independent reader (PP-OCRv5 latin) reads every line. It cannot read
 Vietnamese diacritics well but reads digits reliably, so numbers that both engines agree on
@@ -75,6 +76,14 @@ def unwarp_page(rgb: np.ndarray) -> np.ndarray | None:
     area = cv2.contourArea(c) / (small.shape[0] * small.shape[1])
     if not 0.25 < area < 0.97:                       # no separate page region: already a flat scan
         return None
+    # Only a photo has a desk around the page: the outer frame must be clearly darker than the
+    # page. Folds, shadows and stains on a flat scan also split the paper, but its frame is paper.
+    band = max(4, min(gray.shape) // 40)
+    frame = np.concatenate([gray[:band].ravel(), gray[-band:].ravel(), gray[:, :band].ravel(), gray[:, -band:].ravel()])
+    page_mask = np.zeros_like(gray)
+    cv2.drawContours(page_mask, [c], -1, 255, -1)
+    if np.median(frame) > 0.75 * np.median(gray[page_mask > 0]):
+        return None
     quad = cv2.approxPolyDP(c, 0.02 * cv2.arcLength(c, True), True)
     if len(quad) != 4:
         quad = cv2.boxPoints(cv2.minAreaRect(c))
@@ -98,19 +107,6 @@ def flatten_light(rgb: np.ndarray) -> np.ndarray | None:
     bg = cv2.resize(bg, (gray.shape[1], gray.shape[0]), interpolation=cv2.INTER_LINEAR).astype(np.float32)
     out = np.clip(rgb.astype(np.float32) / np.maximum(bg[..., None], 1) * 245, 0, 255)
     return out.astype(np.uint8)
-
-
-def despeckle(rgb: np.ndarray) -> np.ndarray | None:
-    """Median filter for fax-like pages (almost binary with isolated noise pixels)."""
-    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
-    mid = np.mean((gray > 40) & (gray < 215))
-    if mid > 0.03:                                   # real grey levels: not a fax
-        return None
-    dark = (gray < 128).astype(np.uint8)
-    n, _, stats, _ = cv2.connectedComponentsWithStats(dark, connectivity=8)
-    if n < 50 or np.mean(stats[1:, cv2.CC_STAT_AREA] <= 2) < 0.3:
-        return None
-    return cv2.medianBlur(rgb, 3)
 
 
 def rotate(rgb: np.ndarray, deg: float) -> np.ndarray:
@@ -194,7 +190,9 @@ def prepare(img: Image.Image, with_lines: bool = True) -> Prepared:
     rgb = np.asarray(img.convert("RGB"))
     steps: list[str] = []
     with _lock:
-        for name, fn in (("nắn phẳng ảnh chụp", unwarp_page), ("cân sáng", flatten_light), ("lọc nhiễu fax", despeckle)):
+        # No despeckling: on 100-dpi faxes the thousands/decimal separators *are* 1–2 px dots,
+        # and erasing them turned 12.345 into 12345 (measured: 13/16 → 5/16 numbers correct).
+        for name, fn in (("nắn phẳng ảnh chụp", unwarp_page), ("cân sáng", flatten_light)):
             try:
                 out = fn(rgb)
             except Exception:
