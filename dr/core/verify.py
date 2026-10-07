@@ -30,11 +30,18 @@ class Claim:
     nli: float | None = None
 
 
+_NUM_SEP = re.compile(r"(?<=\d)[.,](?=\d)")
+
+
 def norm(s: str) -> str:
+    """Word-stream form for verbatim comparison: case, whitespace and punctuation are
+    ignored, but every word and every digit (including number separators like 1.250,5)
+    must match exactly."""
     s = unicodedata.normalize("NFC", s).lower()
-    s = s.replace("“", '"').replace("”", '"').replace("’", "'").replace("–", "-").replace("—", "-")
-    s = re.sub(r"\s+", " ", s)
-    return s.strip(" .;:,")
+    s = _NUM_SEP.sub(lambda m: "\x00" if m.group(0) == "." else "\x01", s)   # protect 1.250,5
+    s = "".join(" " if unicodedata.category(ch).startswith("P") or ch in "|·•" else ch for ch in s)
+    s = s.replace("\x00", ".").replace("\x01", ",")
+    return re.sub(r"\s+", " ", s).strip()
 
 
 def _parse_number(tok: str) -> set[Decimal]:
@@ -85,8 +92,12 @@ def quote_found(quote: str, passage: str, fuzzy: bool) -> bool:
     return best >= 0.9
 
 
-def check(raw_claims: list[dict], labels: dict[str, int], passages: dict[int, dict]
+def check(raw_claims: list[dict], labels: dict[str, int], passages: dict[int, dict], question: str = ""
           ) -> tuple[list[Claim], list[tuple[dict, str]]]:
+    """Numbers that already appear in the question (e.g. the year asked about) are context,
+    not facts asserted by the answer, so they need not appear in the quote."""
+    q_vals = vn_numbers(question)
+    q_union = set().union(*q_vals) if q_vals else set()
     kept: list[Claim] = []
     dropped: list[tuple[dict, str]] = []
     for rc in raw_claims:
@@ -112,7 +123,7 @@ def check(raw_claims: list[dict], labels: dict[str, int], passages: dict[int, di
             continue
         quote_vals = [v for g in good for v in vn_numbers(g.quote)]
         quote_union = set().union(*quote_vals) if quote_vals else set()
-        missing = [vals for vals in vn_numbers(text) if not (vals & quote_union)]
+        missing = [vals for vals in vn_numbers(text) if not (vals & quote_union) and not (vals & q_union)]
         if missing:
             dropped.append((rc, "con số trong câu trả lời không khớp câu trích"))
             continue

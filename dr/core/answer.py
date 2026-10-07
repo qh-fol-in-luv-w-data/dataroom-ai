@@ -8,6 +8,7 @@ Order (master plan v0.5 §4.4):
 from __future__ import annotations
 
 import hashlib
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Callable
@@ -21,6 +22,7 @@ from dr.tenant.service import FakeTenant
 NO_ROLE_MESSAGE = "Tài khoản của bạn chưa được cấp quyền sử dụng trợ lý AI trong Data Room."
 MAX_CHUNKS_PER_FILE = 3
 MAX_PASSAGES = 10
+FOCUSED_PASSAGES = 5   # retry size when a small local model finds nothing in 10 passages
 
 
 @dataclass
@@ -45,6 +47,36 @@ class Trace:
         now = time.time()
         self.steps.append({"step": step, "ok": ok, "ms": int((now - self._t) * 1000), **detail})
         self._t = now
+
+
+_MARKER = re.compile(r"mã kiểm soát:?\s*ks-[a-z]+-\d{4}", re.IGNORECASE)
+
+
+def _signature(text: str) -> str:
+    """Content signature ignoring per-document control markers, case and spacing."""
+    return hashlib.sha1(verify.norm(_MARKER.sub(" ", text)).encode()).hexdigest()
+
+
+def select_passages(order: list[int], passages: dict[int, dict], chosen: set[str],
+                    max_passages: int, max_per_file: int) -> list[int]:
+    """Best-first passages from live-checked files, skipping near-duplicate content
+    (e.g. the same financial statement sheet copied into many workbooks)."""
+    selected: list[int] = []
+    per_file: dict[str, int] = {}
+    seen: set[str] = set()
+    for c in order:
+        if len(selected) >= max_passages:
+            break
+        it = passages[c]["item_id"]
+        if it not in chosen or per_file.get(it, 0) >= max_per_file:
+            continue
+        sig = _signature(passages[c]["text"])
+        if sig in seen:
+            continue
+        seen.add(sig)
+        selected.append(c)
+        per_file[it] = per_file.get(it, 0) + 1
+    return selected
 
 
 def _refuse(oid, question, message, trace, kind="refusal", extra=None) -> dict:
@@ -89,8 +121,13 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
 
     # group by file, keep file order by best chunk
     files: list[str] = []
+    seen_sig: set[str] = set()
     for c in order:
         it = passages[c]["item_id"]
+        sig = _signature(passages[c]["text"])
+        if sig in seen_sig:      # near-duplicate content must not take a file slot
+            continue
+        seen_sig.add(sig)
         if it not in files:
             files.append(it)
 
@@ -116,13 +153,7 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
     if transient and files and files[0] in dropped_live:
         return _refuse(oid, question, RETRY_MESSAGE, trace)
 
-    selected: list[int] = []
-    per_file: dict[str, int] = {}
-    for c in order:
-        it = passages[c]["item_id"]
-        if it in chosen and per_file.get(it, 0) < MAX_CHUNKS_PER_FILE and len(selected) < MAX_PASSAGES:
-            selected.append(c)
-            per_file[it] = per_file.get(it, 0) + 1
+    selected = select_passages(order, passages, set(chosen), MAX_PASSAGES, MAX_CHUNKS_PER_FILE)
     if not selected:
         return _refuse(oid, question, NEUTRAL_REFUSAL, trace)
     sel_passages = {c: passages[c] for c in selected}
@@ -137,9 +168,18 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
     trace.add(f"LLM {settings.llm_model} (JSON có ràng buộc)", True, raw_claims=len(raw.get("claims", [])))
 
     # ---- deterministic verification
-    kept, dropped = verify.check(raw.get("claims", []), labels, sel_passages)
+    kept, dropped = verify.check(raw.get("claims", []), labels, sel_passages, question)
     trace.add("Kiểm chứng tất định (trích dẫn nguyên văn, con số)", True, kept=len(kept), dropped=len(dropped),
               dropped_reasons=[r for _, r in dropped])
+    if not kept and len(selected) > FOCUSED_PASSAGES:
+        # Small local models lose facts in long contexts: retry once on the top passages only.
+        focus = llm_in[:FOCUSED_PASSAGES]
+        raw, labels = deps.llm(question, focus)
+        kept, dropped2 = verify.check(raw.get("claims", []), labels,
+                                      {p["chunk_id"]: sel_passages[p["chunk_id"]] for p in focus}, question)
+        dropped += dropped2
+        trace.add(f"Thử lại có trọng tâm ({FOCUSED_PASSAGES} đoạn đầu) + kiểm chứng", True, kept=len(kept),
+                  dropped_reasons=[r for _, r in dropped2])
     if deps.nli:
         for cl in kept:
             cl.nli = round(deps.nli(" ".join(c.quote for c in cl.citations), cl.text), 3)
