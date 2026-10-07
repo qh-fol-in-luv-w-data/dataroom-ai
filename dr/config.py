@@ -40,7 +40,9 @@ class Settings:
     rate_per_minute: int = int(_env("DR_RATE_MIN", "8"))
     rate_per_hour: int = int(_env("DR_RATE_HOUR", "60"))
     llm_concurrency: int = int(_env("DR_LLM_CONCURRENCY", "2"))
-    search_backend: str = _env("DR_SEARCH", "pg")  # pg (pgvector + BM25 in Postgres, RLS in the query) | memory
+    search_backend: str = _env("DR_SEARCH", "pg")
+    tenant_mode: str = _env("DR_TENANT", "fake")          # fake (simulated SharePoint/Entra) | m365 (Microsoft Graph)
+    m365_config: Path = field(default_factory=lambda: Path(_env("DR_M365_CONFIG", str(ROOT / "data" / "m365.json"))))  # pg (pgvector + BM25 in Postgres, RLS in the query) | memory
     nli_threshold: float = float(_env("DR_NLI_THRESHOLD", "0.5"))
     # OCR: PaddleOCR-VL-1.6 served by mlx-vlm on the Apple GPU; PP-OCRv5 latin as fallback.
     ocr_server_url: str = _env("DR_OCR_SERVER", "http://127.0.0.1:8111/")

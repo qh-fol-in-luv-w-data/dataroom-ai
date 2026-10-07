@@ -3,6 +3,7 @@ and a "SharePoint viewer" endpoint that serves originals only if SharePoint allo
 from __future__ import annotations
 
 import io
+import json
 import logging
 import mimetypes
 import queue
@@ -13,7 +14,7 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -44,6 +45,8 @@ class State:
     ingest_busy = False
     last_ingest: list[dict] = []
     models_ready = False
+    validator = None
+    m365: dict = {}
 
 
 S = State()
@@ -91,7 +94,17 @@ def _warm_models():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     pg.ensure_cluster()
-    S.tenant = FakeTenant()
+    if settings.tenant_mode == "m365":
+        from dr.m365.entra_auth import EntraValidator
+        from dr.m365.tenant import GraphTenant
+        cfg = json.loads(settings.m365_config.read_text(encoding="utf-8"))
+        S.tenant = GraphTenant(cfg)
+        api = cfg["api"]["client_id"]
+        S.validator = EntraValidator(cfg["tenant_id"], [api, f"api://{api}"],
+                                     admin_role=cfg.get("admin_role", "DataRoom.AIAdmin"))
+        S.m365 = cfg
+    else:
+        S.tenant = FakeTenant()
     S.connector = Connector(S.tenant)
     S.connector.full_resync()
     S.index = make_index()
@@ -110,17 +123,35 @@ app.mount("/static", StaticFiles(directory=WEB), name="static")
 
 
 # ------------------------------------------------------------------ auth helpers
-def current(authorization: str | None = Header(default=None)) -> dict:
-    claims = auth.verify((authorization or "").removeprefix("Bearer ").strip())
+async def current(authorization: str | None = Header(default=None)) -> dict:
+    """Demo: HMAC token. m365: Entra access token for the AI API (signature, issuer, audience,
+    expiry, scope Chat.Use); the raw token is kept for the live check's on-behalf-of call.
+    Async on purpose: the context variable set here is copied into the threadpool."""
+    token = (authorization or "").removeprefix("Bearer ").strip()
+    if settings.tenant_mode == "m365":
+        from dr.m365.auth import AuthError
+        from dr.m365.tenant import USER_TOKEN
+        try:
+            claims = S.validator.validate(token)
+        except AuthError as e:
+            raise HTTPException(401, f"Phiên đăng nhập không hợp lệ: {e}")
+        USER_TOKEN.set(token)
+        return claims
+    claims = auth.verify(token)
     if not claims:
         raise HTTPException(401, "Phiên đăng nhập không hợp lệ hoặc đã hết hạn")
-    return claims
+    return {**claims, "admin": claims["oid"] == auth.ADMIN_OID}
 
 
 def admin_only(claims: dict = Depends(current)) -> dict:
-    if claims["oid"] != auth.ADMIN_OID:
-        raise HTTPException(403, "Chỉ quản trị viên demo")
+    if not claims.get("admin"):
+        raise HTTPException(403, "Chỉ quản trị viên")
     return claims
+
+
+@app.exception_handler(NotImplementedError)
+async def _read_only(_, exc: NotImplementedError):
+    return JSONResponse({"detail": str(exc) or "Không hỗ trợ ở chế độ này"}, status_code=501)
 
 
 def _groups_of(oid: str) -> list[str]:
@@ -139,9 +170,22 @@ def home():
     return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
 
+@app.get("/api/auth/config")
+def auth_config():
+    """How the browser signs in: demo password, or Entra ID via MSAL (SPA app registration)."""
+    if settings.tenant_mode != "m365":
+        return {"mode": "demo"}
+    c = S.m365
+    return {"mode": "m365", "tenant_id": c["tenant_id"], "client_id": c["spa_client_id"],
+            "authority": f"https://login.microsoftonline.com/{c['tenant_id']}",
+            "scope": c.get("api_scope", f"api://{c['api']['client_id']}/Chat.Use")}
+
+
 @app.get("/api/auth/demo-accounts")
 def demo_accounts():
     """E-mails of the demo accounts for the sign-in helper (no secrets)."""
+    if settings.tenant_mode == "m365":
+        return []
     out = [{"email": a["email"], "name": a["name"], "org": a.get("org", ""), "type": "admin", "groups": []}
            for a in S.tenant.admins.values()]
     out += [{"email": u.get("email", ""), "name": u["name"], "org": u.get("org", ""), "type": u.get("type", "guest"),
@@ -156,6 +200,8 @@ class LoginIn(BaseModel):
 
 @app.post("/api/auth/login")
 def login(body: LoginIn):
+    if settings.tenant_mode == "m365":
+        raise HTTPException(400, "Đăng nhập bằng tài khoản Microsoft (Entra ID)")
     email = body.email.strip().lower()
     wait = accounts.locked(email)
     if wait:
@@ -177,8 +223,9 @@ def login(body: LoginIn):
 @app.get("/api/me")
 def me(claims: dict = Depends(current)):
     oid = claims["oid"]
-    if oid == auth.ADMIN_OID:
-        a = next(iter(S.tenant.admins.values()), {"name": "Quản trị", "email": "", "org": ""})
+    if claims.get("admin"):
+        a = next(iter(S.tenant.admins.values()), {"name": claims.get("name", "Quản trị"),
+                                                    "email": claims.get("upn", ""), "org": ""})
         return {"oid": oid, "name": a["name"], "email": a.get("email", ""), "org": a.get("org", ""),
                 "type": "admin", "roles": ["Admin"], "groups": [], "exp": claims["exp"]}
     u = S.tenant.users.get(oid, {})
@@ -196,7 +243,7 @@ class ChatIn(BaseModel):
 
 @app.post("/api/chat")
 async def chat(body: ChatIn, claims: dict = Depends(current)):
-    if claims["oid"] == auth.ADMIN_OID:
+    if claims.get("admin"):
         raise HTTPException(400, "Hãy chọn một danh tính người dùng để hỏi")
     if S.deps is None:
         raise HTTPException(503, "Model đang khởi động, thử lại sau ít giây")
@@ -245,7 +292,7 @@ def _ai_status(it: dict, db: dict | None, ai_items: dict) -> tuple[str, str]:
 
 @app.get("/api/scope")
 def scope(claims: dict = Depends(current)):
-    if claims["oid"] == auth.ADMIN_OID:
+    if claims.get("admin"):
         raise HTTPException(400, "Hãy chọn một danh tính người dùng")
     return _scope(claims["oid"])
 
@@ -354,7 +401,10 @@ def audit_verify(_: dict = Depends(admin_only)):
 
 @app.get("/open/{item_id}")
 def open_file(item_id: str, t: str = Query(...)):
-    """'SharePoint viewer': SharePoint itself decides at open time."""
+    """'SharePoint viewer': SharePoint itself decides at open time. With Microsoft 365 the
+    citation links straight to the file's webUrl, so this demo viewer does not exist."""
+    if settings.tenant_mode == "m365":
+        raise HTTPException(404, "Mở tài liệu trực tiếp trên SharePoint")
     claims = auth.verify(t)
     if not claims:
         raise HTTPException(401, "Phiên không hợp lệ")
@@ -374,6 +424,8 @@ def crop(item_id: str, t: str = Query(...), page: str = Query(...), box: str | N
     """Region of a cleaned scan page, for checking an OCR'd quote against the original.
     Same rule as /open: SharePoint (sp_can_read) decides, and the page must belong to a
     current chunk of this very item."""
+    if settings.tenant_mode == "m365":    # production renders crops in memory from SharePoint (plan §4.4)
+        raise HTTPException(404, "Không có ảnh trang")
     claims = auth.verify(t)
     if not claims:
         raise HTTPException(401, "Phiên không hợp lệ")
