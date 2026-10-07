@@ -3,6 +3,9 @@ import json
 from pathlib import Path
 
 
+TEST_PASSWORD = "test-only-password-1"
+
+
 class Clock:
     def __init__(self, t: float = 1_000_000.0):
         self.t = t
@@ -67,5 +70,11 @@ def make_tenant(root: Path) -> Path:
         ],
         "items": items,
     }
+    from dr.gateway.accounts import hash_password
+    pw = hash_password(TEST_PASSWORD)
+    for u in tenant["users"]:
+        u["email"] = f"{u['oid']}@test.example"
+        u["pw"] = pw
+    tenant["admins"] = [{"oid": "admin", "name": "Admin", "email": "admin@test.example", "pw": pw}]
     (root / "tenant.json").write_text(json.dumps(tenant, ensure_ascii=False, indent=1), encoding="utf-8")
     return root

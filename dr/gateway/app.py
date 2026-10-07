@@ -22,7 +22,8 @@ from dr.connector.sync import Connector
 from dr.core import answer as answer_mod
 from dr.core.index import SearchIndex
 from dr.db import pg
-from dr.gateway import auth, scenarios
+from dr.gateway import accounts, auth, scenarios
+from dr.gateway import admin as admin_mod
 from dr.ingest import ocr, pipeline
 from dr.tenant.service import FakeTenant
 
@@ -121,6 +122,9 @@ def _groups_of(oid: str) -> list[str]:
     return sorted(g for g, v in S.tenant.groups.items() if oid in v["members"])
 
 
+app.include_router(admin_mod.build_router(S, admin_only, lambda ch: _on_changes(ch)))
+
+
 # ------------------------------------------------------------------ pages
 @app.get("/", response_class=HTMLResponse)
 def home():
@@ -130,28 +134,54 @@ def home():
     return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
 
-@app.get("/api/users")
-def users():
-    out = [{"oid": u["oid"], "name": u["name"], "org": u.get("org", ""), "type": u.get("type", "guest"),
-            "roles": u.get("roles", []), "groups": _groups_of(u["oid"]), "enabled": u.get("enabled", True)}
-           for u in S.tenant.users.values()]
-    out.append({"oid": auth.ADMIN_OID, "name": "Quản trị demo", "org": "Bảng điều khiển", "type": "admin",
-                "roles": ["Admin"], "groups": [], "enabled": True})
+@app.get("/api/auth/demo-accounts")
+def demo_accounts():
+    """E-mails of the demo accounts for the sign-in helper (no secrets)."""
+    out = [{"email": a["email"], "name": a["name"], "org": a.get("org", ""), "type": "admin", "groups": []}
+           for a in S.tenant.admins.values()]
+    out += [{"email": u.get("email", ""), "name": u["name"], "org": u.get("org", ""), "type": u.get("type", "guest"),
+             "groups": _groups_of(u["oid"]), "enabled": u.get("enabled", True)} for u in S.tenant.users.values()]
     return out
 
 
 class LoginIn(BaseModel):
-    oid: str
+    email: str
+    password: str
 
 
-@app.post("/api/login")
+@app.post("/api/auth/login")
 def login(body: LoginIn):
-    if body.oid == auth.ADMIN_OID:
-        return {"token": auth.issue(auth.ADMIN_OID, ["Admin"], "Quản trị demo"), "oid": auth.ADMIN_OID}
-    u = S.tenant.users.get(body.oid)
-    if not u or not u.get("enabled", True):
-        raise HTTPException(403, "Tài khoản không tồn tại hoặc đã bị vô hiệu hóa (Entra)")
-    return {"token": auth.issue(u["oid"], u.get("roles", []), u["name"]), "oid": u["oid"]}
+    email = body.email.strip().lower()
+    wait = accounts.locked(email)
+    if wait:
+        raise HTTPException(429, f"Đăng nhập sai quá nhiều lần. Thử lại sau {int(wait) + 1} giây.")
+    found = accounts.find_account(S.tenant, email)
+    if not found or not accounts.check_password(body.password, found[1].get("pw")):
+        accounts.record_failure(email)
+        raise HTTPException(401, "Email hoặc mật khẩu không đúng")
+    kind, rec = found
+    if kind == "user" and not rec.get("enabled", True):
+        raise HTTPException(403, "Tài khoản đã bị vô hiệu hóa trong Entra ID")
+    accounts.clear_failures(email)
+    roles = ["Admin"] if kind == "admin" else rec.get("roles", [])
+    oid = auth.ADMIN_OID if kind == "admin" else rec["oid"]
+    audit.append(oid, "sign_in", {"email": email})
+    return {"token": auth.issue(oid, roles, rec["name"]), "oid": oid}
+
+
+@app.get("/api/me")
+def me(claims: dict = Depends(current)):
+    oid = claims["oid"]
+    if oid == auth.ADMIN_OID:
+        a = next(iter(S.tenant.admins.values()), {"name": "Quản trị", "email": "", "org": ""})
+        return {"oid": oid, "name": a["name"], "email": a.get("email", ""), "org": a.get("org", ""),
+                "type": "admin", "roles": ["Admin"], "groups": [], "exp": claims["exp"]}
+    u = S.tenant.users.get(oid, {})
+    return {"oid": oid, "name": u.get("name", claims["name"]), "email": u.get("email", ""), "org": u.get("org", ""),
+            "type": u.get("type", "guest"), "roles": claims["roles"], "groups": _groups_of(oid),
+            "sites": [{"id": s["id"], "name": s["name"]} for s in S.tenant.sites.values()
+                      if set(s.get("groups", [])) & set(_groups_of(oid))],
+            "exp": claims["exp"]}
 
 
 class ChatIn(BaseModel):

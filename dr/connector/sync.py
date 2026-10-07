@@ -39,19 +39,28 @@ class Connector:
         self.drive_cursor = 0
         self.entra_cursor = 0
         self.last_error: str | None = None
+        self._lock = threading.RLock()   # background thread and admin requests may both poll
 
     # ------------------------------------------------------------------ public
     def full_resync(self) -> dict:
         """Start from scratch (cursor 0) — used at startup and after a tenant reset."""
+        with self._lock:
+            return self._full_resync()
+
+    def _full_resync(self) -> dict:
         self.drive_cursor = 0
         self.entra_cursor = 0
         with pg.admin() as c:
             c.execute("DELETE FROM memberships; DELETE FROM user_roles; DELETE FROM users_mirror; "
                       "DELETE FROM revocations; DELETE FROM deny_list; DELETE FROM grants;")
             c.commit()
-        return self.poll_once(full=True)
+        return self._poll(full=True)
 
     def poll_once(self, full: bool = False) -> dict:
+        with self._lock:
+            return self._poll(full)
+
+    def _poll(self, full: bool) -> dict:
         changes = {"items_changed": [], "items_deleted": [], "ctag_changed": [], "entra_events": 0,
                    "drive_events": 0, "entra_ok": False}
         seen_items: set[str] = set()

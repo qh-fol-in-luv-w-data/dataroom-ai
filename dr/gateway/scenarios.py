@@ -77,7 +77,7 @@ def run(name: str, params: dict, tenant, connector) -> dict:
         tenant.set_entra_paused(False)
         return {"title": "Khôi phục nguồn delta Entra", "explain": "Lần đồng bộ kế tiếp làm mới mốc thời gian.", "try": ""}
     if name == "reset":
-        tenant.load()
+        tenant.load(original=True)
         connector.full_resync()
         with pg.admin() as c:
             c.execute("DELETE FROM item_reader WHERE via_id='FAULT-INJECTION'")

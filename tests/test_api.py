@@ -8,7 +8,7 @@ from dr.db import pg
 from dr.gateway import app as appmod
 from dr.ingest.chunker import fold
 from dr.tenant.service import FakeTenant
-from tests.mini_tenant import make_tenant
+from tests.mini_tenant import TEST_PASSWORD, make_tenant
 from tests.test_gates import stub_llm
 
 
@@ -32,7 +32,8 @@ def client(db, tmp_path):
 
 
 def login(client, oid):
-    return {"Authorization": "Bearer " + client.post("/api/login", json={"oid": oid}).json()["token"]}
+    r = client.post("/api/auth/login", json={"email": f"{oid}@test.example", "password": TEST_PASSWORD})
+    return {"Authorization": "Bearer " + r.json()["token"]}
 
 
 def test_scope_matches_sharepoint(client):
@@ -78,3 +79,54 @@ def test_remove_from_group_scenario(client):
     statuses = {f["item_id"]: f["status"] for s in sc["sites"] for fo in s["folders"] for f in fo["files"]}
     assert statuses.get("a1") == "ai_blocked"   # SharePoint still lets them open it (lag), AI does not
     assert statuses.get("b1") == "ai_ok"
+
+
+def test_login_wrong_password_and_lockout(client):
+    for _ in range(5):
+        r = client.post("/api/auth/login", json={"email": "inv-c1@test.example", "password": "wrong"})
+        assert r.status_code == 401
+    r = client.post("/api/auth/login", json={"email": "inv-c1@test.example", "password": TEST_PASSWORD})
+    assert r.status_code == 429
+
+
+def test_demo_accounts_has_no_secrets(client):
+    data = client.get("/api/auth/demo-accounts").json()
+    assert data and all("pw" not in a and "password" not in a for a in data)
+
+
+def test_admin_grant_and_revoke_via_api(client):
+    ha, hb = login(client, "admin"), login(client, "inv-b1")
+    # GRP-A has RAC: a direct grant alone is not enough, so grant on a COMMON file B cannot see yet
+    r = client.post("/api/admin/grants", headers=ha, json={"target": "item", "site": "COMMON", "key": "c1",
+                                                           "kind": "group", "id": "DR-INV-B", "add": False})
+    assert r.status_code == 200
+    sc = client.get("/api/scope", headers=hb).json()
+    assert "c1" not in {f["item_id"] for s in sc["sites"] for fo in s["folders"] for f in fo["files"]}
+    tree = client.get("/api/admin/tree/COMMON", headers=ha).json()
+    f = next(x for fo in tree["folders"] for x in fo["files"] if x["item_id"] == "c1")
+    assert f["unique"] and "DR-INV-B" not in {g["id"] for g in f["grants"]}
+    client.post("/api/admin/grants/inherit", headers=ha, json={"target": "item", "site": "COMMON", "key": "c1"})
+    sc = client.get("/api/scope", headers=hb).json()
+    assert "c1" in {f["item_id"] for s in sc["sites"] for fo in s["folders"] for f in fo["files"]}
+
+
+def test_admin_disable_user_blocks_login(client):
+    ha = login(client, "admin")
+    client.post("/api/admin/users/inv-b1/enabled", headers=ha, json={"enabled": False})
+    r = client.post("/api/auth/login", json={"email": "inv-b1@test.example", "password": TEST_PASSWORD})
+    assert r.status_code == 403
+
+
+def test_admin_create_user(client):
+    ha = login(client, "admin")
+    r = client.post("/api/admin/users", headers=ha, json={"name": "Nhà đầu tư mới", "email": "moi@quy.example",
+                                                          "roles": ["Investor.AI"], "groups": ["DR-INV-C"],
+                                                          "password": "a-long-password"})
+    assert r.status_code == 200
+    r = client.post("/api/auth/login", json={"email": "moi@quy.example", "password": "a-long-password"})
+    assert r.status_code == 200
+
+
+def test_investor_cannot_call_admin(client):
+    hb = login(client, "inv-b1")
+    assert client.get("/api/admin/directory", headers=hb).status_code == 403
