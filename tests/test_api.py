@@ -7,6 +7,7 @@ from dr.core.pgindex import PgSearchIndex, tsv_literal
 from dr.db import pg
 from dr.gateway import app as appmod
 from dr.ingest.chunker import fold
+from dr.security import ratelimit
 from dr.tenant.service import FakeTenant
 from tests.mini_tenant import TEST_PASSWORD, make_tenant
 from tests.test_gates import stub_llm
@@ -29,6 +30,7 @@ def client(db, tmp_path):
     S.tenant, S.connector, S.index = tenant, conn, PgSearchIndex()  # the app default
     S.index.refresh()
     S.deps = answer.Deps(llm=stub_llm)
+    ratelimit.limiter.reset()
     return TestClient(appmod.app)  # no lifespan: state injected above
 
 
@@ -153,3 +155,9 @@ def test_crop_follows_sharepoint_permission(client, tmp_path, monkeypatch):
     assert client.get("/crop/a1", params={"t": tb, **q}).status_code == 403      # SharePoint says no
     assert client.get("/crop/b1", params={"t": tb, **q}).status_code == 404      # page is not b1's
     assert client.get("/crop/a1", params={"t": ta, "page": "../../etc/p1"}).status_code == 404
+
+
+def test_chat_rate_limited(client):
+    h = login(client, "inv-a1")
+    codes = [client.post("/api/chat", headers=h, json={"question": "phí thu xếp"}).status_code for _ in range(10)]
+    assert codes[:8] == [200] * 8 and codes[8] == 429

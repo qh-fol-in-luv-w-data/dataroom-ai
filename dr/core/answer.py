@@ -14,9 +14,10 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from dr import audit
-from dr.config import NEUTRAL_REFUSAL, RETRY_MESSAGE, UNAVAILABLE_MESSAGE, settings
+from dr.config import BLOCKED_MESSAGE, NEUTRAL_REFUSAL, RETRY_MESSAGE, UNAVAILABLE_MESSAGE, settings
 from dr.core import gates, verify
 from dr.core.index import SearchIndex
+from dr.security import guard, pii
 from dr.tenant.service import FakeTenant
 
 NO_ROLE_MESSAGE = "Tài khoản của bạn chưa được cấp quyền sử dụng trợ lý AI trong Data Room."
@@ -31,11 +32,12 @@ class Deps:
     rerank: Callable | None = None
     llm: Callable | None = None
     nli: Callable | None = None
+    embed_many: Callable | None = None     # batch embeddings (input guard scores parts of long questions)
 
     @classmethod
     def real(cls) -> "Deps":
         from dr.models import embed, llm, nli, rerank
-        return cls(embed.embed_query, rerank.rerank, llm.answer_json, nli.entail)
+        return cls(embed.embed_query, rerank.rerank, llm.answer_json, nli.entail, embed_many=embed.embed_texts)
 
 
 @dataclass
@@ -80,7 +82,8 @@ def select_passages(order: list[int], passages: dict[int, dict], chosen: set[str
 
 
 def _refuse(oid, question, message, trace, kind="refusal", extra=None) -> dict:
-    seq = audit.append(oid, kind, {"question": question, "message": message,
+    seq = audit.append(oid, kind, {"question": pii.mask(question)[0] if settings.mask_pii else question,
+                                   "message": message,
                                    "trace": [s["step"] + (":ok" if s["ok"] else ":fail") for s in trace.steps],
                                    **(extra or {})})
     return {"refused": True, "message": message, "claims": [], "citations": [], "trace": trace.steps,
@@ -140,7 +143,24 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
     if not n_allowed:
         return _refuse(oid, question, NEUTRAL_REFUSAL, trace)
 
-    qvec = deps.embed_query(question) if deps.embed_query else None
+    # ---- layer 2: input security (normalise, injection rules, classifier, personal data)
+    if settings.input_guard:
+        clean_q = guard.clean(question)
+        qvec = deps.embed_query(clean_q) if deps.embed_query else None
+        v = guard.inspect(question, qvec, deps.embed_many)
+        trace.add("Lớp đầu vào – chuẩn hóa, luật chống prompt injection, bộ phân loại", not v.blocked,
+                  rules=v.rules, score=v.score, normalized=v.changed)
+        if v.blocked:
+            return _refuse(oid, question, BLOCKED_MESSAGE, trace, kind="input_blocked",
+                           extra={"rules": v.rules, "score": v.score})
+        question = clean_q
+    else:
+        qvec = deps.embed_query(question) if deps.embed_query else None
+    if settings.mask_pii:
+        masked_q, kinds = pii.mask(question)
+        if kinds:
+            trace.add("Che thông tin cá nhân trong câu hỏi", True, kinds=kinds)
+            question = masked_q
     if getattr(index, "in_db", False):
         hits, info = index.search_as(oid, question, qvec, k=settings.rerank_top, site=scope_site)
         trace.add("Tìm kiếm lai BM25 + vector trong Postgres (RLS ngay trong câu truy vấn)", True,
@@ -261,6 +281,16 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
                         if n in cl.text or n in c.quote})
         claims_out.append({"text": cl.text, "refs": sorted(set(refs)), "nli": cl.nli, "ocr_doubt": doubt,
                            "uncertain": bool(doubt) or (cl.nli is not None and cl.nli < settings.nli_threshold)})
+    if settings.mask_pii:      # after verification (quotes were checked against the real text)
+        masked_kinds: set[str] = set()
+        for c in claims_out:
+            c["text"], k = pii.mask(c["text"])
+            masked_kinds.update(k)
+        for c in cites:
+            c["quote"], k = pii.mask(c["quote"])
+            masked_kinds.update(k)
+        if masked_kinds:
+            trace.add("Che thông tin cá nhân trong câu trả lời", True, kinds=sorted(masked_kinds))
     answer_text = "\n".join(c["text"] for c in claims_out)
     seq = audit.append(oid, "answer", {
         "question": question,

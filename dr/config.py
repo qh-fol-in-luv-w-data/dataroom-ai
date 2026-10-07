@@ -35,6 +35,11 @@ class Settings:
 
     max_files: int = int(_env("DR_MAX_FILES", "8"))
     rerank_top: int = int(_env("DR_RERANK_TOP", "40"))
+    input_guard: bool = _env("DR_INPUT_GUARD", "1") == "1"   # layer 2: normalisation + injection rules + classifier
+    mask_pii: bool = _env("DR_MASK_PII", "1") == "1"         # mask personal identifiers in questions, answers, audit
+    rate_per_minute: int = int(_env("DR_RATE_MIN", "8"))
+    rate_per_hour: int = int(_env("DR_RATE_HOUR", "60"))
+    llm_concurrency: int = int(_env("DR_LLM_CONCURRENCY", "2"))
     search_backend: str = _env("DR_SEARCH", "pg")  # pg (pgvector + BM25 in Postgres, RLS in the query) | memory
     nli_threshold: float = float(_env("DR_NLI_THRESHOLD", "0.5"))
     # OCR: PaddleOCR-VL-1.6 served by mlx-vlm on the Apple GPU; PP-OCRv5 latin as fallback.
@@ -58,5 +63,8 @@ class Settings:
 settings = Settings()
 
 NEUTRAL_REFUSAL = "Không tìm thấy thông tin phù hợp trong các tài liệu bạn được phép truy cập."
+BLOCKED_MESSAGE = ("Câu hỏi có dấu hiệu yêu cầu trợ lý bỏ qua quy tắc, tiết lộ cấu hình hoặc vượt quyền, nên không được xử lý. "
+                   "Hãy hỏi trực tiếp về nội dung tài liệu.")
+RATE_MESSAGE = "Bạn đang hỏi quá nhanh. Vui lòng thử lại sau {seconds} giây."
 RETRY_MESSAGE = "Hệ thống chưa xác minh được đầy đủ nguồn lúc này, vui lòng thử lại sau ít phút."
 UNAVAILABLE_MESSAGE = "Trợ lý AI tạm ngừng để đảm bảo an toàn phân quyền. Vui lòng thử lại sau."

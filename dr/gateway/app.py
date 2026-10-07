@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from dr import audit
-from dr.config import settings
+from dr.config import RATE_MESSAGE, settings
 from dr.connector.sync import Connector
 from dr.core import answer as answer_mod
 from dr.core.index import SearchIndex
@@ -27,6 +27,7 @@ from dr.db import pg
 from dr.gateway import accounts, auth, scenarios
 from dr.gateway import admin as admin_mod
 from dr.ingest import ocr, pipeline
+from dr.security import ratelimit
 from dr.tenant.service import FakeTenant
 
 log = logging.getLogger("gateway")
@@ -199,8 +200,16 @@ async def chat(body: ChatIn, claims: dict = Depends(current)):
         raise HTTPException(400, "Hãy chọn một danh tính người dùng để hỏi")
     if S.deps is None:
         raise HTTPException(503, "Model đang khởi động, thử lại sau ít giây")
-    return await run_in_threadpool(answer_mod.ask, S.tenant, S.index, claims["oid"], claims["roles"],
-                                   body.question, S.deps, body.scope_site)
+    wait = ratelimit.limiter.check(claims["oid"])
+    if wait:
+        audit.append(claims["oid"], "rate_limited", {"retry_after": round(wait)})
+        raise HTTPException(429, RATE_MESSAGE.format(seconds=int(wait) + 1), headers={"Retry-After": str(int(wait) + 1)})
+
+    def run():
+        with ratelimit.limiter.slots:     # bounded concurrent LLM work across all users
+            return answer_mod.ask(S.tenant, S.index, claims["oid"], claims["roles"], body.question, S.deps,
+                                  body.scope_site)
+    return await run_in_threadpool(run)
 
 
 # ------------------------------------------------------------------ scope / matrix
