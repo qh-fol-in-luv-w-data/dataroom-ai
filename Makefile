@@ -3,7 +3,7 @@ UV      ?= $(shell command -v uv || echo $(HOME)/.local/bin/uv)
 VL_DIR  := $(HOME)/.paddlex/official_models/PaddleOCR-VL-1.6
 PORT    ?= 8000
 
-.PHONY: setup models pgvector pg-start pg-stop ocr-server data accounts public ingest migrate-search run leak-test qa-eval hard-scans ocr-eval scale-test test test-all reset-db
+.PHONY: setup models pgvector pg-start pg-stop ocr-server data accounts public ingest migrate-search run leak-test qa-eval hard-scans ocr-eval attack-set train-guard attack-eval scale-test test test-all reset-db
 
 setup:            ## create venv + install dependencies
 	$(UV) venv --python 3.11 .venv
@@ -59,6 +59,15 @@ hard-scans:       ## generate 40 hard scanned documents + truth (data/eval/hard_
 
 ocr-eval:         ## OCR accuracy on the hard scans: raw vs cleaned, number cross-check (needs ocr-server)
 	$(PY) scripts/ocr_eval.py
+
+attack-set:       ## multilingual prompt-attack dataset (train / held-out test)
+	$(PY) scripts/gen_attack_set.py
+
+train-guard:      ## train the input-guard classifier on bge-m3 embeddings (needs Ollama)
+	$(PY) scripts/train_guard.py
+
+attack-eval:      ## red-team the guard on the held-out set, then 30 attacks end to end with the guard off
+	$(PY) scripts/attack_eval.py --e2e 30
 
 scale-test:       ## 1M-chunk load test of the in-database search (separate DB dataroom_scale, ~10 GB)
 	$(PY) scripts/scale_test.py load --n 1000000
