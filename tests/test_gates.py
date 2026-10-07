@@ -88,6 +88,23 @@ def test_excluded_never_used(env):
     assert "x1" not in items_cited(res)
 
 
+def test_focused_retry_when_llm_finds_nothing(env, monkeypatch):
+    tenant, _, ix = env
+    calls = []
+
+    def picky_llm(question, passages):
+        calls.append(len(passages))
+        if len(passages) > 2:          # simulates a small model lost in many passages
+            return {"claims": [], "no_answer": True}, {}
+        return stub_llm(question, passages)
+
+    monkeypatch.setattr(answer, "FOCUSED_PASSAGES", 2)
+    res = answer.ask(tenant, ix, "staff-1", ["Staff.AI"], "thỏa thuận phí thu xếp cam kết bảo lãnh",
+                     answer.Deps(llm=picky_llm))
+    assert calls[0] > 2 and calls[-1] == 2
+    assert not res["refused"]
+
+
 def test_audit_chain_and_tamper(env):
     tenant, _, ix = env
     for q in ("doanh thu", "phí thu xếp", "bảo lãnh"):
