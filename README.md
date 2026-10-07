@@ -102,6 +102,34 @@ scripts/        sinh dữ liệu, nạp, tải tài liệu công khai, ma trận
 docs/           spec và kế hoạch triển khai
 ```
 
+## Lớp bảo mật đầu vào (L2), che dữ liệu cá nhân, hạn mức
+
+Lớp L2 nằm trong `dr/security/`, chạy local và không tải thêm model.
+
+**Lớp lọc câu hỏi** (`guard.py`) gồm ba bước:
+1. **Chuẩn hóa:** NFKC, bỏ ký tự vô hình, đổi ký tự giả dạng Cyrillic/Greek sang chữ Latin.
+2. **Luật bắt câu tấn công** tiếng Việt (có dấu và không dấu) và tiếng Anh. Luật chạy cả trên dạng đã giải base64/hex, leetspeak và chữ cách quãng.
+3. **Bộ phân loại hồi quy logistic** trên embedding bge-m3. Đây là chính vector dùng để tìm kiếm, nên không tốn thêm thời gian. Câu dài được chấm thêm từng câu, với ngưỡng riêng 0,9.
+
+Bộ dữ liệu tấn công nằm ở `make attack-set`, `scripts/train_guard.py`, `scripts/attack_eval.py`, gồm hai tập dùng mẫu câu khác nhau:
+- tập huấn luyện: 600 câu;
+- tập thử: 450 câu, có thêm tiếng Trung và tiếng Pháp.
+
+| Tập thử giữ riêng | Kết quả |
+|---|---|
+| Phát hiện tấn công (300 câu) | **85,3%** |
+| Chặn nhầm câu hợp lệ (150 câu) | **0,7%**; câu bẫy 0/82 |
+| Theo loại | Ghi đè chỉ dẫn 97%; đòi system prompt 89%; nhập vai 100%; mã hóa 100%; thẻ giả 100%; vượt quyền 82%; trích xuất hàng loạt 71%; ép bịa số / ép khẳng định 43% |
+| Độ trễ | Dưới 1 ms; câu dài thêm khoảng 0,1 s |
+
+Số đo này lạc quan: điểm vận hành được chọn sau khi đã xem tập thử. Kiểm định chéo trên tập huấn luyện đạt 97%, cho thấy độ rơi khi gặp mẫu câu mới.
+
+**End-to-end khi tắt hẳn lớp L2** (`attack_eval.py --e2e 30`): 30 câu tấn công với LLM thật, dưới tên nhà đầu tư Nhóm B, **0 rò rỉ**. 25 câu bị lớp sau từ chối. 5 câu được trả lời, nhưng chỉ từ tài liệu được phép và đã kiểm chứng trích dẫn. Lớp L2 là lớp bảo vệ thêm; ranh giới quyền nằm ở RLS và bước kiểm tra trực tiếp.
+
+**Che dữ liệu cá nhân** (`pii.py`): che CCCD/CMND, hộ chiếu, di động, email cá nhân trong câu hỏi, câu trả lời và nhật ký, giữ lại 3 ký tự cuối. Không che MST, tài khoản công ty, fax hay số liệu. Che sau bước kiểm chứng câu trích.
+
+**Hạn mức** (`ratelimit.py`): mỗi người tối đa 8 câu/phút và 60 câu/giờ; tối đa 2 câu xử lý LLM cùng lúc. Vượt hạn mức trả 429, kèm thời gian chờ.
+
 ## Bản scan khó: tiền xử lý và kiểm tra con số
 
 Bộ thử `make hard-scans` gồm 40 tài liệu (52 trang, 2.037 con số chính) với 12 kiểu lỗi: xoay 90/180/270°, nghiêng, ảnh chụp điện thoại trên bàn, fax 100 dpi, độ phân giải thấp, dấu đỏ và chữ ký đè lên số, chữ viết tay, bảng kéo dài nhiều trang, hai cột, nếp gấp và vết cà phê. `make ocr-eval` so OCR thẳng với OCR có tiền xử lý.
@@ -180,4 +208,5 @@ Tìm kiếm vẫn dưới 1 giây ở mọi trường hợp. Bước chậm nh�
 - SharePoint và Entra là bản giả lập. Connector được viết để sau này thay bằng Graph thật (delta, `/permissions`, OBO).
 - Đăng nhập là token HMAC giả lập, thay cho MSAL và Entra.
 - Chỉ mục HNSW đang là một chỉ mục chung. Ở quy mô lớn, người chỉ thấy vài site nên dùng chỉ mục HNSW riêng theo site (xem mục Thử tải).
+- Hạn mức để trong bộ nhớ một process; production dùng kho dùng chung ở Gateway.
 - Không có sandbox gVisor cho parser, không có ClamAV/YARA. Kiểm tra an toàn file ở mức tối thiểu.
