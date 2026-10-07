@@ -55,10 +55,15 @@ class FakeTenant:
         self.load()
 
     # ------------------------------------------------------------------ loading
-    def load(self) -> None:
+    def load(self, original: bool = False) -> None:
+        """Load tenant.json. original=True restores the baseline saved before the first admin change."""
         with self._lock:
+            orig = self.dir / "tenant.original.json"
+            if original and orig.exists():
+                (self.dir / "tenant.json").write_text(orig.read_text(encoding="utf-8"), encoding="utf-8")
             raw = json.loads((self.dir / "tenant.json").read_text(encoding="utf-8"))
             self.raw = raw
+            self.admins = {a["oid"]: copy.deepcopy(a) for a in raw.get("admins", [])}
             self.users = {u["oid"]: copy.deepcopy(u) for u in raw["users"]}
             self.groups = {g["id"]: {"name": g.get("name", g["id"]), "members": set(g["members"])}
                            for g in raw["groups"]}
@@ -248,6 +253,117 @@ class FakeTenant:
     def set_entra_paused(self, paused: bool) -> None:
         with self._lock:
             self.entra_paused = paused
+
+    # ------------------------------------------------------------------ admin (permission page)
+    def _items_under(self, site: str, path: str | None) -> list[str]:
+        p = (path or "").strip("/")
+        return [i for i, it in self.items.items() if it["site"] == site and
+                (not p or it["path"] == p or it["path"].startswith(p + "/"))]
+
+    def inherited_grants(self, site: str, path: str) -> list[Grant]:
+        """Grants a folder would inherit from its parents (nearest unique ancestor, else the site)."""
+        parts = path.strip("/").split("/") if path.strip("/") else []
+        for i in range(len(parts) - 1, 0, -1):
+            f = self.folders.get((site, "/".join(parts[:i])))
+            if f and f.get("unique"):
+                return [Grant(g["kind"], g["id"], f"folder:{'/'.join(parts[:i])}") for g in f["grants"]]
+        return [Grant("group", g, f"site:{site}") for g in self.sites[site].get("groups", [])]
+
+    def folder_grants(self, site: str, path: str) -> tuple[bool, list[Grant]]:
+        f = self.folders.get((site, path.strip("/")))
+        if f and f.get("unique"):
+            return True, [Grant(g["kind"], g["id"], "unique") for g in f["grants"]]
+        return False, self.inherited_grants(site, path)
+
+    def set_grant(self, target: str, site: str, key: str, kind: str, pid: str, add: bool) -> None:
+        """Add/remove a user or group grant on a folder (target='folder', key=path) or a file
+        (target='item', key=item_id). Like SharePoint, the first change breaks inheritance
+        by copying the currently effective grants."""
+        assert kind in ("user", "group") and target in ("folder", "item")
+        with self._lock:
+            if target == "folder":
+                path = key.strip("/")
+                f = self.folders.get((site, path))
+                if not f or not f.get("unique"):
+                    cur = [{"kind": g.kind, "id": g.id} for g in self.folder_grants(site, path)[1]]
+                    f = {"site": site, "path": path, "unique": True, "grants": cur}
+                    self.folders[(site, path)] = f
+                grants = f["grants"]
+                affected = self._items_under(site, path)
+            else:
+                it = self.items[key]
+                if not it["unique"]:
+                    it["grants"] = [{"kind": g.kind, "id": g.id} for g in self.permissions(key)
+                                    if not g.kind.startswith("link_")] + \
+                                   [g for g in it["grants"] if g["kind"].startswith("link_")]
+                    it["unique"] = True
+                grants = it["grants"]
+                affected = [key]
+            entry = {"kind": kind, "id": pid}
+            if add and entry not in grants:
+                grants.append(entry)
+            if not add:
+                grants[:] = [g for g in grants if not (g["kind"] == kind and g["id"] == pid)]
+            t = self.now()
+            for iid in affected:
+                self._drive_upsert(iid, t)
+
+    def restore_inheritance(self, target: str, site: str, key: str) -> None:
+        with self._lock:
+            if target == "folder":
+                self.folders.pop((site, key.strip("/")), None)
+                affected = self._items_under(site, key)
+            else:
+                it = self.items[key]
+                it["unique"] = False
+                it["grants"] = [g for g in it["grants"] if g["kind"].startswith("link_")]
+                affected = [key]
+            t = self.now()
+            for iid in affected:
+                self._drive_upsert(iid, t)
+
+    def set_site_groups(self, site: str, groups: list[str]) -> None:
+        """Site permission (and RAC) groups."""
+        with self._lock:
+            s = self.sites[site]
+            s["groups"] = list(groups)
+            t = self.now()
+            self.drive_events.append(Event(len(self.drive_events) + 1, t, "site", {
+                "site_id": site, "name": s["name"], "rac_groups": list(groups) if s.get("rac") else []}))
+            for iid in self._items_under(site, None):
+                self._drive_upsert(iid, t)
+
+    def create_user(self, rec: dict, groups: list[str]) -> None:
+        """Invite a guest / create a member (Entra), then add to groups (SharePoint lag applies)."""
+        with self._lock:
+            if rec["oid"] in self.users:
+                raise ValueError("oid đã tồn tại")
+            u = {"enabled": True, "roles": [], **rec}
+            self.users[u["oid"]] = u
+            self._entra(self.now(), "user", oid=u["oid"], enabled=u["enabled"], roles=list(u["roles"]))
+            for g in groups:
+                self.add_member(g, u["oid"])
+
+    def save(self) -> None:
+        """Persist the current state to tenant.json (baseline kept in tenant.original.json)."""
+        with self._lock:
+            tj, orig = self.dir / "tenant.json", self.dir / "tenant.original.json"
+            if not orig.exists():
+                orig.write_text(tj.read_text(encoding="utf-8"), encoding="utf-8")
+            raw = dict(self.raw)
+            raw["admins"] = list(self.admins.values())
+            raw["users"] = list(self.users.values())
+            raw["groups"] = [{"id": g, "name": v["name"], "members": sorted(v["members"])} for g, v in self.groups.items()]
+            raw["sites"] = list(self.sites.values())
+            raw["folders"] = list(self.folders.values())
+            items = []
+            for it in self.items.values():
+                it = dict(it)
+                items.append(it)
+            raw["items"] = items
+            tmp = tj.with_suffix(".tmp")
+            tmp.write_text(json.dumps(raw, ensure_ascii=False, indent=1), encoding="utf-8")
+            tmp.replace(tj)
 
     def membership_lag_status(self, now: float | None = None) -> list[dict]:
         now = self.now() if now is None else now
