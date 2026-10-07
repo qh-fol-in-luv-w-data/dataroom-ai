@@ -58,9 +58,15 @@ def main() -> int:
         probe_hits = 0
         for site, markers in facts["markers"].items():
             for mk in markers[:25]:
-                for cid, _ in ix.search(set(allowed), mk, None, k=10):
+                if getattr(ix, "in_db", False):     # RLS inside the search query
+                    hits = ix.search_as(oid, mk, None, k=10)[0]
+                else:
+                    hits = ix.search(set(allowed), mk, None, k=10)
+                for cid, _ in hits:
                     probe_hits += 1
-                    if allowed[cid] not in sp_items:
+                    if cid not in allowed:
+                        leaks.append(f"{oid}: dò {mk} trả về đoạn {cid} ngoài phạm vi RLS")
+                    elif allowed[cid] not in sp_items:
                         leaks.append(f"{oid}: dò {mk} trả về {allowed[cid]}")
         # secret facts
         for f in facts["facts"]:
