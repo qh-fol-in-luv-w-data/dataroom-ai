@@ -124,7 +124,10 @@ def _groups_of(oid: str) -> list[str]:
 # ------------------------------------------------------------------ pages
 @app.get("/", response_class=HTMLResponse)
 def home():
-    return (WEB / "index.html").read_text(encoding="utf-8")
+    html = (WEB / "index.html").read_text(encoding="utf-8")
+    for f in ("style.css", "app.js"):  # cache-bust static assets on every change
+        html = html.replace(f"/static/{f}", f"/static/{f}?v={int((WEB / f).stat().st_mtime)}")
+    return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/users")
