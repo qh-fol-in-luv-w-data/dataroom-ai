@@ -152,8 +152,7 @@ MATRIX = [
     ("Số liệu chính xác ", "Con số phải có trong câu trích; độ đúng ≥ 99% (tin cậy 95%) ", "BR-05", "Should"),
 ]
 
-REFS = ["• Kế hoạch tổng: AI core cho Data Room trên SharePoint (IPO), v0.6 – 07/10/2026.",
-        "• Kế hoạch bảo mật AI Data Room (tham khảo) và số đo bản demo ngày 07/10/2026."]
+REMOVE = (39, 40)   # the two reference lines under heading 9 (left empty on request)
 
 HEADINGS = {27: "BUSINESS RULE CẦN CHỦ DATA ROOM XÁC NHẬN", 29: "CÁC BÊN CẦN CUNG CẤP (INPUTS)"}
 
@@ -237,8 +236,8 @@ def build(src: str, out: str) -> None:
     put(P(34), MS_INTRO)
     fill(T(35), MILESTONES)
     fill(T(37), [(str(i), *row) for i, row in enumerate(MATRIX, 1)])
-    put(P(39), REFS[0])
-    put(P(40), REFS[1])
+    for i in REMOVE:                       # mục 9 để trống theo yêu cầu: bỏ hẳn 2 dòng tham khảo
+        els[i].getparent().remove(els[i])
     for s in d.sections:
         for p in s.header.paragraphs:
             if p.text.strip():
@@ -264,7 +263,7 @@ def _tree(el):
             tuple(_tree(c) for c in el))
 
 
-def skeleton(path: str) -> dict[str, bytes]:
+def skeleton(path: str, drop=()) -> dict[str, bytes]:
     """Every part, canonicalised (C14N), with all w:t text blanked and xml:space dropped."""
     from lxml import etree
     W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
@@ -274,6 +273,11 @@ def skeleton(path: str) -> dict[str, bytes]:
             data = z.read(n)
             if n.endswith(".xml") or n.endswith(".rels"):
                 root = etree.fromstring(data)
+                if drop and n == "word/document.xml":
+                    body = root.find(W + "body")
+                    kids = list(body)
+                    for i in drop:
+                        body.remove(kids[i])
                 for t in root.iter(W + "t"):
                     t.text = None
                     t.attrib.pop("{http://www.w3.org/XML/1998/namespace}space", None)
@@ -283,7 +287,7 @@ def skeleton(path: str) -> dict[str, bytes]:
 
 
 def check(src: str, out: str) -> bool:
-    a, b = skeleton(src), skeleton(out)
+    a, b = skeleton(src, REMOVE), skeleton(out)   # the only intended structural change
     if set(a) != set(b):
         print("Khác danh sách phần:", set(a) ^ set(b))
         return False
