@@ -84,9 +84,13 @@ def parse_pdf(data: bytes, name: str) -> ParsedDoc:
         else:
             scan_pages.append(i)
     converter = "pdfium-text"
+    from dr.config import settings
+    if len(scan_pages) > settings.ocr_max_pages:
+        notes.append(f"Chỉ OCR {settings.ocr_max_pages}/{len(scan_pages)} trang scan đầu (giới hạn demo)")
+        scan_pages = scan_pages[: settings.ocr_max_pages]
     if scan_pages:
         # OCR only the pages without a usable text layer
-        if len(scan_pages) == len(pdf):
+        if len(scan_pages) == len(pdf) and len(pdf) <= settings.ocr_max_pages:
             pages = ocr_bytes(data, ".pdf")
             mapping = {p.page - 1: p for p in pages}
         else:

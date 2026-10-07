@@ -40,6 +40,7 @@ class Settings:
     ocr_server_url: str = _env("DR_OCR_SERVER", "http://127.0.0.1:8111/")
     ocr_vl_model: str = _env("DR_OCR_VL_MODEL", str(Path.home() / ".paddlex/official_models/PaddleOCR-VL-1.6"))
     ocr_engine: str = _env("DR_OCR_ENGINE", "vl")  # vl | ppocr
+    ocr_max_pages: int = int(_env("DR_OCR_MAX_PAGES", "40"))  # per document, keeps big scanned prospectuses bounded
 
     @property
     def tenant_dir(self) -> Path:
