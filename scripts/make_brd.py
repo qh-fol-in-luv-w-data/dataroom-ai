@@ -23,7 +23,7 @@ HEADER = "DAIT – DATA ROOM | BUSINESS REQUIREMENT DOCUMENT | AI CORE DATA RO
 INFO = [
     ("Đơn vị nghiệp vụ", "Chủ Data Room IPO (Deal team) - Quản trị tenant Microsoft 365"),
     ("Đơn vị triển khai", "Ban DAIT - Phát triển ứng dụng – Team AI"),
-    ("Mục tiêu giai đoạn", "Go-live Bản 1 ngày 26/02/2027"),
+    ("Mục tiêu giai đoạn", "Ready for Pilot/UAT ngày 20/11/2026"),
     ("Phạm vi chính", "AI core on-prem trả lời câu hỏi trên tài liệu Data Room SharePoint, đúng quyền SharePoint, "
                       "có trích dẫn nguyên văn đã kiểm chứng"),
     ("Tình trạng", "Dự thảo – Đang chờ Chủ Data Room và BOD xác nhận các Business Rule và một số yêu cầu liên quan"),
@@ -35,8 +35,8 @@ OBJECTIVE = ("Mục tiêu: Xây AI core chạy on-prem tại Việt Nam cho Data
 IN_SCOPE = ("Phạm vi In-scope: Bắt đầu từ khi tài liệu đã nằm trên site Data Room SharePoint (đã gán AI_Use và nhãn) → "
             "Đồng bộ quyền & nạp tài liệu (OCR) → Hỏi đáp qua 4 cổng quyền → Trả lời có trích dẫn & Nhật ký.")
 OUT_SCOPE = ("Phạm vi Out-of-scope: Không xây Data Room, trình xem, watermark hay chức năng cấp quyền (thuộc SharePoint, "
-             "Entra, Purview do Chủ Data Room và Quản trị tenant thực hiện). Không lưu file gốc on-prem. Câu hỏi đếm/tổng "
-             "và kho bản ghi thuộc Bản 2, chờ đánh giá sau Go-live.")
+             "Entra, Purview do Chủ Data Room và Quản trị tenant thực hiện). Không lưu file gốc on-prem. Mở cho nhà đầu tư "
+             "(Go-live) sau khi Pilot/UAT đạt các cổng; câu hỏi đếm/tổng thuộc Bản 2.")
 
 PIPE_INTRO = "Quy trình hệ thống tuân theo luồng xử lý:"
 PIPE_B0 = ("B0 – Chuẩn bị Data Room: Chủ Data Room đưa tài liệu lên SharePoint, gán AI_Use và nhãn; Quản trị tenant cấp "
@@ -91,13 +91,13 @@ RULES = [
 
 INPUTS = [
     ("1", "Site thử Data Room, ≥ 10 tài khoản khách thử (B2B), cấp quyền Sites.Selected; chuyển người dùng OTP kiểu cũ sang B2B.",
-     "Quản trị tenant", "Trước 16/10/2026 (Dùng cho 9 phép thử tích hợp; OTP trước 31/10/2026)"),
-    ("2", "Bộ câu hỏi chuẩn có đáp án (150 câu phát triển + ≥ 500 câu giữ riêng) và 300 trang scan mẫu kèm 1.000 ô số chép lại.",
-     "Trưởng deal team (Người nghiệp vụ)", "Trước 23/10/2026 (Dùng để Test & Tinh chỉnh độ chính xác)"),
+     "Quản trị tenant", "Trước 14/10/2026 (Dùng cho 9 phép thử tích hợp; OTP trước 31/10/2026)"),
+    ("2", "Tối thiểu 100 câu hỏi mẫu có đáp án và 50 trang scan mẫu (dấu đỏ, bảng, chữ ký) kèm con số chép lại.",
+     "Trưởng deal team (Người nghiệp vụ)", "Trước 16/10/2026 (Dùng để Test & Tinh chỉnh độ chính xác)"),
 ]
 
 UAT = [
-    ("UAT-01", "Nhà đầu tư hỏi bộ câu chuẩn (≥ 500 câu).",
+    ("UAT-01", "Hỏi bộ câu chuẩn trên site thử (≥ 100 câu).",
      "Đánh giá theo các chỉ số: độ đúng ≥ 99% (tin cậy 95%) / từ chối nhầm ≤ 15% / 100% trích dẫn hợp lệ."),
     ("UAT-02", "Nhà đầu tư Nhóm B hỏi nội dung chỉ Nhóm A có.", "Hệ thống từ chối trung tính, 0 rò rỉ trên ma trận ≥ 3.000 phép thử."),
     ("UAT-03", "Gỡ nhà đầu tư khỏi nhóm / offboard / ngắt nguồn quyền.",
@@ -107,16 +107,18 @@ UAT = [
      "Không mẫu nào làm lộ dữ liệu; chặn nhầm ≤ 1% trên câu hỏi thật."),
 ]
 
-MS_INTRO = "Dự án được phân bổ nguồn lực (đội 4–5 người) để Go-live Bản 1 trước ngày 26/02/2027."
+MS_INTRO = "Dự án được phân bổ nguồn lực để hoàn thiện và nghiệm thu (UAT) trước ngày 20/11/2026."
 MILESTONES = [
     ("07/10/2026", "Khởi động Dự án", "Kế hoạch tổng v0.6; demo local 4 cổng quyền, OCR, lớp bảo mật đã chạy. (Đang thực hiện)"),
-    ("23/10/2026", "9 phép thử tích hợp M365", "BOD chốt ngân sách GPU; cổng đi tiếp/dừng, phép thử 3 thất bại → chế độ dự phòng."),
-    ("30/10/2026", "PoC độ chính xác & Cổng BOD", "So sánh LLM, OCR, chọn cấu hình GPU; hạn chuyển OTP sang B2B 31/10/2026."),
-    ("04/12/2026", "Nạp tài liệu & Quyền", "Connector, bản chép quyền, tập thu hồi, nạp tài liệu, chỉ mục phân vùng."),
-    ("08/01/2027", "Luồng truy vấn", "Gateway, kiểm tra trực tiếp, giao diện qua DMZ, kiểm chứng, nhật ký."),
-    ("05/02/2027", "Kiểm thử & Quét bảo mật (Security Scan)",
-     "Ma trận rò rỉ, red-team, pentest độc lập, sửa và kiểm lại (lưu ý Tết ~06/02/2027)."),
-    ("26/02/2027", "Go-live Bản 1", "Thử nội bộ 15–19/02 → Go-live → Hypercare đến 26/03/2027."),
+    ("16/10/2026", "Baseline nghiệp vụ & PoC",
+     "Chủ Data Room xác nhận Business Rule; có site thử, khách thử; chạy 9 phép thử tích hợp M365."),
+    ("23/10/2026", "Tích hợp Luồng Lõi",
+     "Kết nối Graph thật (delta, quyền, kiểm tra trực tiếp) thay tenant giả lập; nạp tài liệu site thử."),
+    ("30/10/2026", "Demo Lần 1", "Demo trên site thử cho Chủ Data Room/BOD để lấy feedback; hạn chuyển OTP sang B2B 31/10."),
+    ("13/11/2026", "Hoàn thiện Toàn bộ Tính năng",
+     "Đăng nhập Entra, giao diện, kiểm chứng, nhật ký, dashboard, bộ lọc bảo mật; đo trên bộ câu chuẩn."),
+    ("18/11/2026", "Kiểm thử & Quét bảo mật (Security Scan)", "QA nội bộ, ma trận rò rỉ, red-team, quét lỗ hổng."),
+    ("20/11/2026", "Ready for Pilot / UAT", "Pilot nội bộ (nhân viên, cố vấn) → UAT → Fix → Sign-off trước khi mở cho nhà đầu tư."),
 ]
 
 MATRIX = [
