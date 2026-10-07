@@ -3,7 +3,7 @@ UV      ?= $(shell command -v uv || echo $(HOME)/.local/bin/uv)
 VL_DIR  := $(HOME)/.paddlex/official_models/PaddleOCR-VL-1.6
 PORT    ?= 8000
 
-.PHONY: setup models pgvector pg-start pg-stop ocr-server data accounts public ingest migrate-search run leak-test qa-eval hard-scans ocr-eval attack-set train-guard attack-eval scale-test test test-all reset-db
+.PHONY: setup models pgvector pg-start pg-stop ocr-server data accounts public ingest migrate-search run leak-test qa-eval hard-scans ocr-eval attack-set train-guard attack-eval m365-probe run-m365 scale-test test test-all reset-db
 
 setup:            ## create venv + install dependencies
 	$(UV) venv --python 3.11 .venv
@@ -68,6 +68,12 @@ train-guard:      ## train the input-guard classifier on bge-m3 embeddings (need
 
 attack-eval:      ## red-team the guard on the held-out set, then 30 attacks end to end with the guard off
 	$(PY) scripts/attack_eval.py --e2e 30
+
+m365-probe:       ## the 9 Microsoft 365 integration tests on a test site (needs data/m365.json)
+	$(PY) scripts/m365_probe.py --user
+
+run-m365:         ## the AI core on real SharePoint/Entra (Entra sign-in, Graph connector, OBO live check)
+	DR_TENANT=m365 $(PY) -m uvicorn dr.gateway.app:app --host 127.0.0.1 --port $(PORT)
 
 scale-test:       ## 1M-chunk load test of the in-database search (separate DB dataroom_scale, ~10 GB)
 	$(PY) scripts/scale_test.py load --n 1000000
