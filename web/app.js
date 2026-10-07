@@ -290,6 +290,8 @@ const SUGGEST = [
   ["Nhóm C", "Giá chào bán riêng cho nhà đầu tư chiến lược là bao nhiêu?"],
   ["Nội bộ", "Định giá nội bộ của Sao Mai là bao nhiêu?"],
   ["Scan", "Biên bản xác nhận công suất lắp đặt các nhà máy ghi gì?"],
+  ["Ảnh chụp", "Đơn giá điện năng bán ra tháng 06/2026 trên hóa đơn ký hiệu 1C26TAA là bao nhiêu?"],
+  ["Fax", "Tổng cộng tiền thanh toán trên hóa đơn ký hiệu 1C25TSS số 00004299 là bao nhiêu?"],
 ];
 const THINK = ["Kiểm tra danh tính, vai trò và độ tươi nguồn quyền", "Lọc tài liệu theo quyền (RLS)", "Tìm kiếm lai và xếp hạng lại",
   "Hỏi lại SharePoint bằng danh tính của bạn", "Sinh câu trả lời bằng model local", "Kiểm chứng trích dẫn nguyên văn và con số"];

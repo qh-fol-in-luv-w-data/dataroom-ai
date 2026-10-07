@@ -92,11 +92,23 @@ def numbers_in(text: str) -> list[str]:
     return [n for n in dict.fromkeys(_NUM.findall(text)) if sum(ch.isdigit() for ch in n) >= 3]
 
 
+_GROUPED = re.compile(r"\d{1,3}(?:\.\d{3})+(?:,\d+)?")   # Vietnamese: 1.234.567,89
+
+
+def bad_format(n: str) -> bool:
+    """A dot-grouped number whose groups are not all 3 digits (e.g. 1.555.36 for 1.555,36):
+    both readers can make the same comma/dot mistake, but the format gives it away."""
+    if "/" in n or ":" in n or "-" in n or "." not in n:
+        return False
+    return not _GROUPED.fullmatch(n)            # Vietnamese decimals use a comma, never a dot
+
+
 def cross_check(text: str, lines) -> tuple[list[str], int]:
-    """Numbers in the VLM text that the independent latin reader did not also read."""
-    second = "".join(ln.text for ln in lines).replace(" ", "")
+    """Numbers in the VLM text that the independent latin reader did not also read, or whose
+    Vietnamese number format is impossible."""
+    second = "".join((ln.text if hasattr(ln, "text") else ln["text"]) for ln in lines).replace(" ", "")
     nums = numbers_in(text)
-    return [n for n in nums if n not in second], len(nums)
+    return [n for n in nums if n not in second or bad_format(n)], len(nums)
 
 
 def _page_images(path: str) -> list[Image.Image]:
