@@ -38,6 +38,8 @@ make models       # tải PaddleOCR-VL, reranker, NLI; pull model Ollama
 make data         # sinh 500 tài liệu + tenant.json + facts.json
 make ocr-server   # (terminal riêng) PaddleOCR-VL-1.6 trên GPU qua MLX, cổng 8111
 make ingest       # đồng bộ quyền + đọc/OCR/embedding (~20–40 phút lần đầu)
+# tuỳ chọn: thêm 40 hồ sơ scan khó vào site Chung rồi nạp
+#   make hard-scans && .venv/bin/python scripts/add_hard_scans.py && make ingest
 make run          # mở http://localhost:8000
 ```
 
@@ -99,6 +101,43 @@ web/            giao diện (HTML/JS thuần)
 scripts/        sinh dữ liệu, nạp, tải tài liệu công khai, ma trận rò rỉ, đánh giá hỏi đáp
 docs/           spec và kế hoạch triển khai
 ```
+
+## Bản scan khó: tiền xử lý và kiểm tra con số
+
+Bộ thử `make hard-scans` gồm 40 tài liệu (52 trang, 2.037 con số chính) với 12 kiểu lỗi: xoay 90/180/270°, nghiêng, ảnh chụp điện thoại trên bàn, fax 100 dpi, độ phân giải thấp, dấu đỏ và chữ ký đè lên số, chữ viết tay, bảng kéo dài nhiều trang, hai cột, nếp gấp và vết cà phê. `make ocr-eval` so OCR thẳng với OCR có tiền xử lý.
+
+Các bước tiền xử lý (`dr/ingest/preprocess.py`) chỉ dùng model đã có trên máy, không tải thêm:
+- nắn phẳng ảnh chụp, chỉ khi có mặt bàn bao quanh trang;
+- cân sáng;
+- phóng to trang có độ phân giải thấp;
+- tự nhận hướng trang, dựa trên hình dạng dòng chữ và điểm tin cậy khi đọc xuôi so với đọc ngược;
+- chỉnh nghiêng.
+
+| | OCR thẳng | Có tiền xử lý |
+|---|---|---|
+| Con số chính đọc đúng | 95,9% (1.954/2.037) | **98,4% (2.004/2.037)** |
+| Độ chính xác ký tự (chữ có dấu) | 95,2% | 97,1% |
+| Số bị dấu, chữ ký, vết bẩn đè | 94,9% | 97,4% |
+| Số viết tay | 60,9% | 65,2% |
+| Thời gian mỗi trang (M3 Pro) | 19,8 s | 22,1 s |
+
+Theo từng kiểu lỗi, các mức tăng lớn nhất:
+
+| Kiểu lỗi | OCR thẳng | Có tiền xử lý |
+|---|---|---|
+| Xoay 90° | 79% | 100% |
+| Độ phân giải thấp | 51% | 93% |
+| Xoay 270° | 88% | 95% |
+
+PaddleOCR-VL không cho kết quả giống hệt nhau giữa các lần chạy. Ở lượt đo trước, kiểu độ phân giải thấp được 72% khi OCR thẳng.
+
+**Kiểm tra con số bằng bộ đọc thứ hai.** PP-OCRv5 latin đọc lại cùng trang đã làm sạch. Một con số bị gắn cờ "chưa xác nhận" khi rơi vào một trong hai trường hợp:
+- bộ đọc thứ hai không đọc ra con số đó;
+- con số sai định dạng Việt Nam, ví dụ `1.555.36`, vì số thập phân phải dùng dấu phẩy.
+
+Kết quả: bắt được **16/20 số đọc sai (80%)**, báo nhầm 3,7% số đúng. Câu trả lời trích con số bị gắn cờ sẽ hiện nhãn "số từ bản scan chưa xác nhận", kèm **ảnh cắt đúng vùng trên trang gốc** để người đọc tự đối chiếu. Ảnh cắt được phục vụ qua `/crop/…`, có kiểm tra quyền SharePoint giống `/open`.
+
+Còn yếu: chữ viết tay (65%) và các trường hợp cả hai bộ đọc cùng sai một kiểu. Bản production nên cho người duyệt xem lại các trang có số bị gắn cờ trước khi mở cho nhà đầu tư dùng AI.
 
 ## Tìm kiếm trong Postgres và thử tải 1 triệu đoạn
 

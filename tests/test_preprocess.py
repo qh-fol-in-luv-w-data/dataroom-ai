@@ -70,3 +70,13 @@ def test_chunks_carry_ocr_doubt_and_page():
     first = [c for c in out if "667" in c.text][0]
     assert first.doubt == ["667.036.000.000"] and first.page_key == "abc/p1"
     assert all(not c.doubt for c in out if "667" not in c.text)
+
+
+def test_vietnamese_number_format_catches_shared_misreads():
+    from dr.ingest.ocr import bad_format
+    for wrong in ["1.555.36", "394.55", "12.34.567"]:          # comma read as dot by both readers
+        assert bad_format(wrong)
+    for ok in ["1.555,36", "12.345.678.900", "48,75", "06/09/2025", "0726/2025", "1.234"]:
+        assert not bad_format(ok)
+    doubt, _ = cross_check("Đơn giá 1.555.36 đồng", [preprocess.Line("Don gia 1.555.36 dong", 0.9, (0, 0, 1, 1))])
+    assert doubt == ["1.555.36"]
