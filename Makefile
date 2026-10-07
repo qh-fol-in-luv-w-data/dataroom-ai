@@ -3,7 +3,7 @@ UV      ?= $(shell command -v uv || echo $(HOME)/.local/bin/uv)
 VL_DIR  := $(HOME)/.paddlex/official_models/PaddleOCR-VL-1.6
 PORT    ?= 8000
 
-.PHONY: setup models pg-start pg-stop ocr-server data public ingest run test test-all reset-db
+.PHONY: setup models pg-start pg-stop ocr-server data public ingest run leak-test qa-eval test test-all reset-db
 
 setup:            ## create venv + install dependencies
 	$(UV) venv --python 3.11 .venv
@@ -36,6 +36,12 @@ ingest:           ## sync permissions + parse/OCR/embed everything pending
 
 run:              ## start the demo at http://localhost:$(PORT)
 	$(PY) -m uvicorn dr.gateway.app:app --host 127.0.0.1 --port $(PORT)
+
+leak-test:        ## leak matrix on the live demo DB (every user x every marker / secret)
+	$(PY) scripts/leak_matrix.py
+
+qa-eval:          ## end-to-end Q&A on the secret facts with the real LLM
+	$(PY) scripts/qa_eval.py
 
 test:             ## fast tests (no LLM)
 	$(PY) -m pytest -q -m "not slow and not e2e"
