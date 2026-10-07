@@ -82,6 +82,9 @@ class FakeTenant:
                 it.setdefault("unique", False)
                 it.setdefault("pending_versions", [])
                 self.items[it["id"]] = it
+            # Real SharePoint copies uploaded by scripts/sp_upload.py: citations open them directly.
+            links = self.dir / "sharepoint_links.json"
+            self.links = json.loads(links.read_text(encoding="utf-8")) if links.exists() else {}
             # SharePoint's view of group membership lags behind Entra.
             self._membership_changes: list[tuple[float, str, str, str]] = []  # (t, op, group, oid)
             self.entra_events: list[Event] = []
@@ -180,6 +183,10 @@ class FakeTenant:
             it = self.items[item_id]
             return 200, {"id": item_id, "ctag": it["ctag"], "etag": it["etag"], "ai_use": it["ai_use"],
                          "name": it["name"]}
+
+    def web_url(self, item_id: str) -> str | None:
+        """Link to the real SharePoint copy of this file, if it was uploaded (sp_upload.py)."""
+        return (self.links.get(item_id) or {}).get("web_url")
 
     def download(self, item_id: str) -> bytes:
         return self.file_path(item_id).read_bytes()
