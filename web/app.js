@@ -353,11 +353,13 @@ function renderAnswer(r, i) {
   }).join("")}</ol></details>`;
   if (r.refused) return `${head}<div class="refused">${icon("info")}<div>${esc(r.message)}</div></div>${trace}`;
   const claims = `<ol class="claims">${r.claims.map((c) => `<li>${esc(c.text)}${c.refs.map((n) => `<button class="ref" data-n="${n}" aria-label="Xem trích dẫn ${n}">${n}</button>`).join("")}
-    ${c.uncertain ? `<span class="chip warn" title="Điểm NLI thấp">chưa chắc</span>` : ""}</li>`).join("")}</ol>`;
+    ${(c.ocr_doubt || []).length ? `<span class="chip warn" title="Bộ đọc OCR thứ hai không đọc ra đúng con số này — hãy đối chiếu ảnh gốc bên dưới">số từ bản scan chưa xác nhận: ${esc(c.ocr_doubt.join(", "))}</span>`
+      : c.uncertain ? `<span class="chip warn" title="Điểm NLI thấp">chưa chắc</span>` : ""}</li>`).join("")}</ol>`;
   const cites = `<div class="cites">${r.citations.map((c) => `<div class="cite" id="cite-${i}-${c.n}">
       <div class="cite-top"><span class="cite-n">${c.n}</span>${ftype((c.name.split(".").pop() || "").toLowerCase())}<span class="cite-name" title="${esc(c.name)}">${esc(c.name)}</span></div>
       <div class="cite-loc">${esc(c.locator)}</div>
       <blockquote>${esc(c.quote)}</blockquote>
+      ${c.crop ? `<figure class="crop"><img loading="lazy" alt="Vùng tương ứng trên bản scan gốc" src="/crop/${encodeURIComponent(c.item_id)}?t=${encodeURIComponent(TOKEN)}&page=${encodeURIComponent(c.crop.page)}${c.crop.box ? "&box=" + c.crop.box.join(",") : ""}"><figcaption>${c.crop.box ? "Vùng gốc trên bản scan (đã nắn thẳng)" : "Trang scan gốc (đã nắn thẳng)"}</figcaption></figure>` : ""}
       <div class="cite-foot"><span class="chip">${esc(SITE_LABEL[c.site_id] || c.site_id)}</span>${c.ocr ? '<span class="chip info" title="PaddleOCR-VL">văn bản nhận dạng từ bản scan</span>' : ""}
         <span style="flex:1"></span><a href="/open/${encodeURIComponent(c.item_id)}?t=${encodeURIComponent(TOKEN)}" target="_blank" rel="noopener">Mở trên SharePoint ${icon("ext")}</a></div>
     </div>`).join("")}</div>`;
@@ -365,6 +367,10 @@ function renderAnswer(r, i) {
 }
 
 function wireAnswer(el, i) {
+  $$(".crop img", el).forEach((im) => {
+    im.onclick = () => im.parentElement.classList.toggle("big");
+    im.onerror = () => im.parentElement.remove();   // no permission or page gone: hide quietly
+  });
   $$(".ref", el).forEach((b) => b.onclick = () => {
     const c = $(`#cite-${i}-${b.dataset.n}`); if (!c) return;
     c.scrollIntoView({ behavior: "smooth", block: "center" }); c.classList.add("flash"); setTimeout(() => c.classList.remove("flash"), 1400);

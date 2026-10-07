@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from dr.config import settings  # noqa: E402
 from dr.connector.sync import Connector  # noqa: E402
 from dr.core import gates  # noqa: E402
-from dr.core.index import SearchIndex  # noqa: E402
+from dr.core.pgindex import make_index  # noqa: E402
 from dr.db import pg  # noqa: E402
 from dr.tenant.service import FakeTenant  # noqa: E402
 
@@ -32,7 +32,7 @@ def main() -> int:
     pg.ensure_cluster()
     tenant = FakeTenant()
     Connector(tenant).full_resync()
-    ix = SearchIndex()
+    ix = make_index()
     ix.refresh()
     facts = json.loads((settings.tenant_dir / "facts.json").read_text(encoding="utf-8"))
     with pg.admin() as c:

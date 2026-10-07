@@ -5,6 +5,7 @@ from dr.config import NEUTRAL_REFUSAL
 from dr.connector.sync import Connector
 from dr.core import answer
 from dr.core.index import SearchIndex
+from dr.core.pgindex import PgSearchIndex, tsv_literal
 from dr.db import pg
 from dr.ingest.chunker import fold
 from dr.tenant.service import FakeTenant
@@ -22,8 +23,10 @@ def stub_llm(question, passages):
 DEPS = answer.Deps(embed_query=None, rerank=None, llm=stub_llm, nli=None)
 
 
-@pytest.fixture()
-def env(db, tmp_path):
+@pytest.fixture(params=["memory", "pg"])
+def env(db, tmp_path, request):
+    """Every gate test runs against both search engines: the in-memory index (fed with
+    RLS-allowed ids) and the in-database one (RLS inside the search query)."""
     clock = Clock()
     tenant = FakeTenant(make_tenant(tmp_path), group_lag=60)  # real clock for feed ages
     conn = Connector(tenant)
@@ -31,11 +34,12 @@ def env(db, tmp_path):
     with pg.admin() as c:
         for iid, site, ctag in c.execute("SELECT item_id, site_id, ctag FROM items").fetchall():
             text = tenant.download(iid).decode()
-            c.execute("INSERT INTO chunks(item_id, site_id, ctag, ordinal, locator, text, text_folded, converter) "
-                      "VALUES (%s,%s,%s,0,'Đầu văn bản',%s,%s,'text')", (iid, site, ctag, text, fold(text)))
-            c.execute("UPDATE items SET status='indexed' WHERE item_id=%s", (iid,))
+            c.execute("INSERT INTO chunks(item_id, site_id, ctag, ordinal, locator, text, text_folded, converter, "
+                      "tsv, tlen) VALUES (%s,%s,%s,0,'Đầu văn bản',%s,%s,'text',%s::tsvector,%s)",
+                      (iid, site, ctag, text, fold(text), *tsv_literal(text)))
+            c.execute("UPDATE items SET status='indexed', chunk_count=1 WHERE item_id=%s", (iid,))
         c.commit()
-    ix = SearchIndex()
+    ix = SearchIndex() if request.param == "memory" else PgSearchIndex()
     ix.refresh()
     return tenant, conn, ix
 

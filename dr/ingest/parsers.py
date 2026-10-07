@@ -108,9 +108,10 @@ def parse_pdf(data: bytes, name: str) -> ParsedDoc:
             if not p:
                 continue
             engines.add(p.engine)
+            notes.extend(_ocr_notes(p, f"Trang {i + 1}"))
             for b in p.blocks:
                 kind = "table" if b.label == "table" else "text"
-                blocks.append(Block(b.text, f"Trang {i + 1}", kind, ocr=True))
+                blocks.append(Block(b.text, f"Trang {i + 1}", kind, ocr=True, meta=_ocr_meta(p)))
         blocks.sort(key=lambda b: int(b.locator.split()[1]))
         converter = "+".join(["pdfium-text"] * (len(scan_pages) < len(pdf)) + sorted(engines))
     return ParsedDoc(blocks, converter, notes=notes)
@@ -302,12 +303,26 @@ def parse_text(data: bytes, name: str) -> ParsedDoc:
     return ParsedDoc(blocks, "text")
 
 
+def _ocr_meta(p) -> dict:
+    return {"doubt": p.doubt, "page_key": f"{p.key}/p{p.page}" if p.key else None}
+
+
+def _ocr_notes(p, where: str) -> list[str]:
+    out = []
+    if p.steps:
+        out.append(f"{where}: {', '.join(p.steps)}")
+    if p.doubt:
+        out.append(f"{where}: {len(p.doubt)}/{p.numbers} con số OCR chưa được bộ đọc thứ hai xác nhận")
+    return out
+
+
 def parse_image(data: bytes, name: str, ext: str) -> ParsedDoc:
     from dr.ingest.ocr import ocr_bytes
     pages = ocr_bytes(data, "." + ext)
-    blocks = [Block(b.text, "Ảnh", "table" if b.label == "table" else "text", ocr=True)
+    blocks = [Block(b.text, "Ảnh", "table" if b.label == "table" else "text", ocr=True, meta=_ocr_meta(p))
               for p in pages for b in p.blocks]
-    return ParsedDoc(blocks, pages[0].engine if pages else "ocr")
+    notes = [n for p in pages for n in _ocr_notes(p, "Ảnh")]
+    return ParsedDoc(blocks, pages[0].engine if pages else "ocr", notes=notes)
 
 
 PARSERS = {

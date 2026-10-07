@@ -57,10 +57,11 @@ def fetch_passages(oid: str, chunk_ids: list[int]) -> dict[int, dict]:
     with pg.as_principal(oid) as cur:
         rows = cur.execute(
             "SELECT c.chunk_id, c.item_id, c.text, c.locator, c.ocr, c.injection_flag, c.kind, i.name, i.ctag, "
-            "i.site_id, i.ext FROM chunks c JOIN items i ON i.item_id = c.item_id WHERE c.chunk_id = ANY(%s)",
-            (chunk_ids,)).fetchall()
+            "i.site_id, i.ext, c.ocr_doubt, c.ocr_page FROM chunks c JOIN items i ON i.item_id = c.item_id "
+            "WHERE c.chunk_id = ANY(%s)", (chunk_ids,)).fetchall()
     return {r[0]: {"chunk_id": r[0], "item_id": r[1], "text": r[2], "locator": r[3], "ocr": r[4],
-                   "injection_flag": r[5], "kind": r[6], "name": r[7], "ctag": r[8], "site_id": r[9], "ext": r[10]}
+                   "injection_flag": r[5], "kind": r[6], "name": r[7], "ctag": r[8], "site_id": r[9], "ext": r[10],
+                   "ocr_doubt": r[11] or [], "ocr_page": r[12]}
             for r in rows}
 
 

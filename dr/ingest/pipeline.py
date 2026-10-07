@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from dr.db import pg
 from dr.ingest import safety
+from dr.core.pgindex import tsv_literal, vec_literal
 from dr.ingest.chunker import Chunk, chunk, fold
 from dr.ingest.parsers import SUPPORTED, Block, ParsedDoc, parse
 from dr.models.embed import embed_texts
@@ -103,9 +104,11 @@ def ingest_item(tenant: FakeTenant, item_id: str) -> dict:
         with c.cursor() as cc:
             cc.executemany(
                 "INSERT INTO chunks(item_id, site_id, ctag, is_current, ordinal, locator, kind, text, text_folded, "
-                "injection_flag, ocr, converter, embedding) VALUES (%s,%s,%s,true,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                "injection_flag, ocr, converter, embedding, emb, tsv, tlen, ocr_doubt, ocr_page) "
+                "VALUES (%s,%s,%s,true,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::halfvec,%s::tsvector,%s,%s,%s)",
                 [(item_id, site, ctag, ch.ordinal, ch.locator, ch.kind, ch.text, fold(ch.text), ch.injection_flag,
-                  ch.ocr, doc.converter, vecs[i].tolist()) for i, ch in enumerate(chunks)])
+                  ch.ocr, doc.converter, vecs[i].tolist(), vec_literal(vecs[i]), *tsv_literal(ch.text),
+                  ch.doubt or None, ch.page_key) for i, ch in enumerate(chunks)])
         reason = "; ".join(doc.notes)[:500] or None
         c.execute("UPDATE items SET status='indexed', reason=%s, ingested_ctag=%s, chunk_count=%s, updated_at=now() "
                   "WHERE item_id=%s", (reason, ctag, len(chunks), item_id))

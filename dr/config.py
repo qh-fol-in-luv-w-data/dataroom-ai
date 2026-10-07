@@ -35,6 +35,7 @@ class Settings:
 
     max_files: int = int(_env("DR_MAX_FILES", "8"))
     rerank_top: int = int(_env("DR_RERANK_TOP", "40"))
+    search_backend: str = _env("DR_SEARCH", "pg")  # pg (pgvector + BM25 in Postgres, RLS in the query) | memory
     nli_threshold: float = float(_env("DR_NLI_THRESHOLD", "0.5"))
     # OCR: PaddleOCR-VL-1.6 served by mlx-vlm on the Apple GPU; PP-OCRv5 latin as fallback.
     ocr_server_url: str = _env("DR_OCR_SERVER", "http://127.0.0.1:8111/")

@@ -3,7 +3,7 @@ from fastapi.testclient import TestClient
 
 from dr.connector.sync import Connector
 from dr.core import answer
-from dr.core.index import SearchIndex
+from dr.core.pgindex import PgSearchIndex, tsv_literal
 from dr.db import pg
 from dr.gateway import app as appmod
 from dr.ingest.chunker import fold
@@ -20,12 +20,13 @@ def client(db, tmp_path):
     with pg.admin() as c:
         for iid, site, ctag in c.execute("SELECT item_id, site_id, ctag FROM items").fetchall():
             text = tenant.download(iid).decode()
-            c.execute("INSERT INTO chunks(item_id, site_id, ctag, ordinal, locator, text, text_folded, converter) "
-                      "VALUES (%s,%s,%s,0,'Đầu văn bản',%s,%s,'text')", (iid, site, ctag, text, fold(text)))
+            c.execute("INSERT INTO chunks(item_id, site_id, ctag, ordinal, locator, text, text_folded, converter, "
+                      "tsv, tlen) VALUES (%s,%s,%s,0,'Đầu văn bản',%s,%s,'text',%s::tsvector,%s)",
+                      (iid, site, ctag, text, fold(text), *tsv_literal(text)))
             c.execute("UPDATE items SET status='indexed', chunk_count=1 WHERE item_id=%s", (iid,))
         c.commit()
     S = appmod.S
-    S.tenant, S.connector, S.index = tenant, conn, SearchIndex()
+    S.tenant, S.connector, S.index = tenant, conn, PgSearchIndex()  # the app default
     S.index.refresh()
     S.deps = answer.Deps(llm=stub_llm)
     return TestClient(appmod.app)  # no lifespan: state injected above
@@ -130,3 +131,25 @@ def test_admin_create_user(client):
 def test_investor_cannot_call_admin(client):
     hb = login(client, "inv-b1")
     assert client.get("/api/admin/directory", headers=hb).status_code == 403
+
+
+def test_crop_follows_sharepoint_permission(client, tmp_path, monkeypatch):
+    from PIL import Image
+    from dr.config import settings
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    key = "a" * 40
+    d = tmp_path / "cache" / "ocr" / key
+    d.mkdir(parents=True)
+    Image.new("RGB", (400, 600), "white").save(d / "p1.jpg")
+    (d / "p1.json").write_text("[]")
+    with pg.admin() as c:
+        c.execute("UPDATE chunks SET ocr = true, ocr_page = %s WHERE item_id = 'a1'", (f"{key}/p1",))
+        c.commit()
+    ta = login(client, "inv-a1")["Authorization"].split()[1]
+    tb = login(client, "inv-b1")["Authorization"].split()[1]
+    q = {"page": f"{key}/p1", "box": "10,10,200,200"}
+    r = client.get("/crop/a1", params={"t": ta, **q})
+    assert r.status_code == 200 and r.headers["content-type"] == "image/jpeg"
+    assert client.get("/crop/a1", params={"t": tb, **q}).status_code == 403      # SharePoint says no
+    assert client.get("/crop/b1", params={"t": tb, **q}).status_code == 404      # page is not b1's
+    assert client.get("/crop/a1", params={"t": ta, "page": "../../etc/p1"}).status_code == 404

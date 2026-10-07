@@ -203,3 +203,62 @@ END $$;
 REVOKE ALL ON FUNCTION audit_append(text, text, jsonb) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION me_denied(), me_has_role(text), feed_age(text),
                           audit_append(text, text, jsonb) TO app_query;
+
+-- ---------------------------------------------------------------- in-database search (pgvector + BM25)
+-- Retrieval runs as app_query, so row-level security filters candidates inside the
+-- search query itself: no list of allowed ids is ever materialised in the app.
+CREATE EXTENSION IF NOT EXISTS vector;
+ALTER TABLE chunks ADD COLUMN IF NOT EXISTS emb  halfvec(1024);  -- bge-m3, unit length → inner product
+ALTER TABLE chunks ADD COLUMN IF NOT EXISTS tsv  tsvector;       -- same tokens as the BM25 tokenizer, with positions
+ALTER TABLE chunks ADD COLUMN IF NOT EXISTS tlen integer;        -- token count (BM25 length normalisation)
+ALTER TABLE chunks ADD COLUMN IF NOT EXISTS ocr_doubt text[];    -- OCR numbers not confirmed by the second reader
+ALTER TABLE chunks ADD COLUMN IF NOT EXISTS ocr_page  text;      -- <sha1>/p<n>: cleaned page image for crops
+CREATE INDEX IF NOT EXISTS chunks_emb_hnsw ON chunks USING hnsw (emb halfvec_ip_ops) WITH (m = 16, ef_construction = 64);
+CREATE INDEX IF NOT EXISTS chunks_tsv_gin  ON chunks USING gin (tsv);
+CREATE INDEX IF NOT EXISTS chunks_site_idx ON chunks (site_id);
+
+-- BM25 statistics per site partition (non-interference: one group's documents never change
+-- the term statistics used to rank another group's documents).
+CREATE TABLE IF NOT EXISTS site_stats (
+    site_id text PRIMARY KEY,
+    n       bigint NOT NULL,
+    avgdl   double precision NOT NULL
+);
+CREATE TABLE IF NOT EXISTS term_stats (
+    site_id text NOT NULL,
+    term    text NOT NULL,
+    df      bigint NOT NULL,
+    idf     double precision NOT NULL,
+    PRIMARY KEY (site_id, term)
+);
+CREATE INDEX IF NOT EXISTS term_stats_term_idx ON term_stats (term);
+GRANT SELECT ON site_stats, term_stats TO app_query;
+-- Answer-path queries are short; LLVM JIT compilation costs more (≈1 s) than it saves.
+ALTER ROLE app_query SET jit = off;
+
+CREATE OR REPLACE FUNCTION refresh_term_stats() RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+    TRUNCATE site_stats, term_stats;
+    INSERT INTO site_stats
+        SELECT site_id, count(*), COALESCE(avg(tlen), 1) FROM chunks
+        WHERE is_current AND tsv IS NOT NULL GROUP BY site_id;
+    INSERT INTO term_stats
+        SELECT c.site_id, u.lexeme, count(*) AS df,
+               ln(1 + (s.n - count(*) + 0.5) / (count(*) + 0.5))   -- Lucene idf, always > 0
+        FROM chunks c CROSS JOIN LATERAL unnest(c.tsv) u
+        JOIN site_stats s ON s.site_id = c.site_id
+        WHERE c.is_current AND c.tsv IS NOT NULL
+        GROUP BY c.site_id, u.lexeme, s.n;
+END $$;
+
+-- Under RLS, Postgres may not use the GIN index for `tsv @@ query` (ts_match_vq is not
+-- LEAKPROOF), so every row would be permission-checked first. This definer function only
+-- returns candidate ids from the index; the caller's query runs as app_query, so RLS still
+-- filters them, and ids the principal cannot read never leave the SQL statement.
+CREATE OR REPLACE FUNCTION fts_candidates(q tsquery, cap integer) RETURNS SETOF bigint
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+    SELECT chunk_id FROM chunks WHERE tsv @@ q AND is_current LIMIT cap;
+$$;
+REVOKE ALL ON FUNCTION fts_candidates(tsquery, integer) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION fts_candidates(tsquery, integer) TO app_query;
