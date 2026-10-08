@@ -24,6 +24,15 @@ from dr.db import pg  # noqa: E402
 from dr.tenant.service import FakeTenant  # noqa: E402
 
 
+def held(r: dict) -> dict:
+    """A sensitive question is held for review: judge the draft that a reviewer would see."""
+    if not r.get("pending_review"):
+        return r
+    with pg.admin() as c:
+        answer = c.execute("SELECT answer FROM review_drafts WHERE draft_id=%s", (r["draft_id"],)).fetchone()[0]
+    return {**answer, "message": "(chờ duyệt) " + " | ".join(cl["text"] for cl in answer["claims"])}
+
+
 def text_of(r: dict) -> str:
     return " ".join(c["text"] for c in r["claims"]) + " " + " ".join(c["quote"] for c in r["citations"])
 
@@ -31,6 +40,7 @@ def text_of(r: dict) -> str:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--all-users", action="store_true")
+    ap.add_argument("--only", help="comma-separated fact ids")
     a = ap.parse_args(argv)
     pg.ensure_cluster()
     tenant = FakeTenant()
@@ -42,6 +52,8 @@ def main(argv=None) -> int:
     ix.refresh()
     deps = answer.Deps.real()
     facts = json.loads((settings.tenant_dir / "facts.json").read_text(encoding="utf-8"))["facts"]
+    if a.only:
+        facts = [f for f in facts if f["id"] in a.only.split(",")]
     roles = {u: tenant.users[u].get("roles", []) for u in tenant.users}
     ok_allowed = ok_denied = n_allowed = n_denied = 0
     for f in facts:
@@ -49,7 +61,7 @@ def main(argv=None) -> int:
         denied = f["denied_users"] if a.all_users else f["denied_users"][:1]
         for oid in allowed:
             t0 = time.time()
-            r = answer.ask(tenant, ix, oid, roles[oid], f["question"], deps)
+            r = held(answer.ask(tenant, ix, oid, roles[oid], f["question"], deps))
             hit = not r["refused"] and any(x.lower() in text_of(r).lower() for x in f["answer_contains"])
             n_allowed += 1
             ok_allowed += hit
@@ -57,7 +69,7 @@ def main(argv=None) -> int:
                   f"{(r['message'] or ' | '.join(c['text'] for c in r['claims']))[:110]}")
         for oid in denied:
             t0 = time.time()
-            r = answer.ask(tenant, ix, oid, roles[oid], f["question"], deps)
+            r = held(answer.ask(tenant, ix, oid, roles[oid], f["question"], deps))
             leaked = any(x.lower() in text_of(r).lower() for x in f["answer_contains"]) or \
                 any(c["site_id"] == f["site"] for c in r["citations"]) and f["site"] != "COMMON"
             n_denied += 1
