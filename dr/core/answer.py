@@ -14,8 +14,9 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from dr import audit
-from dr.config import BLOCKED_MESSAGE, NEUTRAL_REFUSAL, RETRY_MESSAGE, UNAVAILABLE_MESSAGE, settings
-from dr.core import gates, verify
+from dr.config import (BLOCKED_MESSAGE, NEUTRAL_REFUSAL, OUT_OF_SCOPE_MESSAGE, RETRY_MESSAGE, UNAVAILABLE_MESSAGE,
+                       settings)
+from dr.core import audience, gates, verify
 from dr.core.index import SearchIndex
 from dr.core import lang as lang_mod
 from dr.core import review
@@ -202,9 +203,24 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
         question = clean_q
     else:
         qvec = deps.embed_query(question) if deps.embed_query else None
+    # ---- a question about another investor group is answered from shared documents only
+    other = audience.other_groups_only(oid, question)
+
+    def out_of_scope() -> dict:
+        r = refuse(OUT_OF_SCOPE_MESSAGE, kind="out_of_scope", extra={"groups": other})
+        r["out_of_scope"] = True
+        return r
+
+    def nothing_found(**kw) -> dict:
+        return out_of_scope() if other else refuse(NEUTRAL_REFUSAL, **kw)
+    if other:
+        trace.add("Câu hỏi về nhóm nhà đầu tư khác → chỉ dùng tài liệu chung", True, groups=other)
+
     # ---- sensitive topics (BRD BR-08): not answered by the AI; the asker is pointed to a person
     topics = review.topics_of(question)
     is_staff = "Staff.AI" in set(g.detail.get("roles_mirror", []))
+    if other and topics:
+        return out_of_scope()      # another group's sensitive matter: nothing anyone here could release
     if topics and not is_staff and settings.sensitive_mode == "contact":
         msg = (f"Nội dung này hơi nhạy cảm, bạn hãy liên hệ trực tiếp {settings.sensitive_contact} để được hỗ trợ."
                if lang == "vi" else
@@ -228,6 +244,14 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
         trace.add("Tìm kiếm lai BM25 + vector (chỉ trên id được phép)", True, hits=len(hits))
     passages = gates.fetch_passages(oid, [cid for cid, _ in hits])
     order = [cid for cid, _ in hits if cid in passages]
+    if other:
+        # never answer a question about group X from the asker's own group documents
+        own = len(order)
+        order = [c for c in order if passages[c]["site_id"] not in audience.group_sites()]
+        trace.add("Bỏ tài liệu riêng của nhóm mình khỏi câu hỏi về nhóm khác", True, kept=len(order),
+                  dropped=own - len(order))
+        if not order:
+            return out_of_scope()
 
     if deps.rerank and order:
         scores = deps.rerank(question, [passages[c]["text"] for c in order])
@@ -273,7 +297,7 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
 
     selected = select_passages(order, passages, set(chosen), settings.max_passages, MAX_CHUNKS_PER_FILE)
     if not selected:
-        return refuse(NEUTRAL_REFUSAL)
+        return nothing_found()
     sel_passages = {c: passages[c] for c in selected}
     flagged = [c for c in selected if passages[c]["injection_flag"]]
     if flagged:
@@ -323,8 +347,7 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
     if not g2.ok:
         return refuse(UNAVAILABLE_MESSAGE)
     if not kept:
-        return refuse(NEUTRAL_REFUSAL,
-                       extra={"llm_no_answer": raw.get("no_answer"), "dropped": [r for _, r in dropped]})
+        return nothing_found(extra={"llm_no_answer": raw.get("no_answer"), "dropped": [r for _, r in dropped]})
 
     # ---- answer mode (BR-04): without a summarize-capable role, only verbatim quotes are shown
     held_roles = set(g2.detail.get("roles_mirror", []))

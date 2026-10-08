@@ -269,6 +269,8 @@ pre.payload { margin: 0; font-family: var(--mono); font-size: 11px; white-space:
   background: #fef6ee; border: 1px solid #f9dbaf; color: #93370d; }
 .sensitive svg.i { width: 22px; height: 22px; flex: none; }
 [data-theme="dark"] .sensitive { background: #2f1d0e; border-color: #6b3b14; color: #fbcfa0; }
+.sensitive.scope { background: #eef4fb; border-color: #c4d6ec; color: #1f3d5c; }
+[data-theme="dark"] .sensitive.scope { background: #13233a; border-color: #2c4a70; color: #c8dcf3; }
 
 /* ---------------------------------------------------------------- sidebar v2 */
 .sidebar { background:

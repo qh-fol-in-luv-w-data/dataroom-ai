@@ -36,8 +36,16 @@ def detect(text: str) -> str:
 
 # Fixed messages of the answer path, in English (BR-11: refusals in the question's language too).
 EN = {
-    "Không tìm thấy thông tin phù hợp trong các tài liệu bạn được phép truy cập.":
-        "No relevant information was found in the documents you are allowed to access.",
+    ("Rất tiếc, chưa tìm thấy thông tin phù hợp trong các tài liệu được chia sẻ với Quý vị. "
+     "Quý vị có thể diễn đạt lại câu hỏi hoặc liên hệ Ban IPO để được hỗ trợ."):
+        "We are sorry, no relevant information was found in the documents shared with you. "
+        "You may rephrase your question or contact the IPO team for assistance.",
+    ("Câu hỏi của Quý vị liên quan đến thông tin dành riêng cho nhóm nhà đầu tư khác, "
+     "nằm ngoài phạm vi tài liệu được chia sẻ với Quý vị. Rất mong Quý vị thông cảm. "
+     "Nếu cần hỗ trợ thêm, Quý vị vui lòng liên hệ Ban IPO."):
+        "Your question concerns information reserved for another investor group, which is outside the "
+        "documents shared with you. Thank you for your understanding. If you need further assistance, "
+        "please contact the IPO team.",
     "Hệ thống chưa xác minh được đầy đủ nguồn lúc này, vui lòng thử lại sau ít phút.":
         "The sources could not be fully verified right now. Please try again in a few minutes.",
     "Trợ lý AI tạm ngừng để đảm bảo an toàn phân quyền. Vui lòng thử lại sau.":
