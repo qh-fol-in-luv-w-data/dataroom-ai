@@ -31,7 +31,8 @@ HOLD_MESSAGE = ("Câu hỏi thuộc nhóm cần Ban IPO xem xét trước khi tr
 
 DEFAULT_TOPICS = {
     "dinh_gia": {"label": "Định giá / giá trị doanh nghiệp",
-                 "terms": ["dinh gia", "valuation", "gia tri doanh nghiep", "enterprise value", "ev/ebitda", "p/e"]},
+                 "terms": ["dinh gia", "valuation", "gia tri doanh nghiep", "enterprise value", "ev/ebitda", "p/e",
+                           "company worth", "fair value"]},
     "gia_chao_ban": {"label": "Giá chào bán / khoảng giá",
                      "terms": ["gia chao ban", "offering price", "offer price", "gia phat hanh", "khoang gia",
                                "price range"]},
@@ -43,7 +44,8 @@ DEFAULT_TOPICS = {
     "du_bao": {"label": "Dự báo / kế hoạch tài chính",
                "terms": ["du bao", "forecast", "projection", "ke hoach loi nhuan", "guidance"]},
     "tranh_chap": {"label": "Tranh chấp / kiện tụng",
-                   "terms": ["tranh chap", "kien tung", "litigation", "lawsuit", "khieu kien", "du phong tranh chap"]},
+                   "terms": ["tranh chap", "kien tung", "litigation", "lawsuit", "khieu kien", "du phong tranh chap",
+                             "dispute", "arbitration", "trong tai", "legal claim"]},
 }
 
 
