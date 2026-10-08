@@ -35,6 +35,14 @@ class Settings:
 
     max_files: int = int(_env("DR_MAX_FILES", "8"))
     rerank_top: int = int(_env("DR_RERANK_TOP", "40"))
+    # Latency (laptop: prompt reading ~330 tok/s dominates): the answer was always within the top
+    # 5 reranked passages on the fact set, so 5 go to the LLM instead of 10.
+    max_passages: int = int(_env("DR_MAX_PASSAGES", "5"))
+    # Only the sentences of those passages that the reranker scores highest are sent (prompt reading
+    # is the slow half); 0 = send whole passages.
+    max_sentences: int = int(_env("DR_MAX_SENTENCES", "14"))
+    llm_keep_alive: str = _env("DR_LLM_KEEP_ALIVE", "24h")    # keep the model loaded (Ollama unloads after 5 min)
+    answer_cache: int = int(_env("DR_ANSWER_CACHE", "2000"))  # LLM outputs memoised by exact input; 0 = off
     input_guard: bool = _env("DR_INPUT_GUARD", "1") == "1"   # layer 2: normalisation + injection rules + classifier
     mask_pii: bool = _env("DR_MASK_PII", "1") == "1"         # mask personal identifiers in questions, answers, audit
     rate_per_minute: int = int(_env("DR_RATE_MIN", "8"))

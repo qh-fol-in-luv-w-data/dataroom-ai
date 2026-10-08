@@ -137,6 +137,35 @@ async function api(path, opts = {}) {
 }
 const post = (path, body) => api(path, { method: "POST", body });
 
+// POST that answers with one JSON object per line (progress events, then {result} or {error}).
+async function postStream(path, body, onEvent) {
+  if (MSAL) TOKEN = await msalToken();
+  const r = await fetch(path, { method: "POST", body: JSON.stringify(body),
+    headers: { "Content-Type": "application/json", ...(TOKEN ? { Authorization: "Bearer " + TOKEN } : {}) } });
+  if (!r.ok) {
+    const data = (r.headers.get("content-type") || "").includes("json") ? await r.json() : {};
+    if (r.status === 401) { logout("Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại."); throw new Error("401"); }
+    throw new Error(data.detail || r.statusText);
+  }
+  const reader = r.body.getReader(), dec = new TextDecoder();
+  let buf = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let i;
+    while ((i = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, i); buf = buf.slice(i + 1);
+      if (!line.trim()) continue;
+      const ev = JSON.parse(line);
+      if (ev.result) return ev.result;
+      if (ev.error) throw new Error(ev.error);
+      onEvent(ev);
+    }
+  }
+  throw new Error("Mất kết nối trước khi có kết quả");
+}
+
 function logout(msg) {
   if (MSAL && MSAL.getActiveAccount()) { MSAL.logoutRedirect({ postLogoutRedirectUri: location.origin + "/" }); return; }
   TOKEN = null; ME = null; store.del("dr-token");
@@ -367,8 +396,21 @@ const mySuggestions = () => {
   const staff = (ME.roles || []).includes("Staff.AI");
   return SUGGEST.filter(([, , grp, staffOnly]) => staff ? true : !staffOnly && (!grp || (ME.groups || []).includes(grp)));
 };
-const THINK = ["Kiểm tra danh tính, vai trò và độ tươi nguồn quyền", "Lọc tài liệu theo quyền (RLS)", "Tìm kiếm lai và xếp hạng lại",
-  "Hỏi lại SharePoint bằng danh tính của bạn", "Sinh câu trả lời bằng model local", "Kiểm chứng trích dẫn nguyên văn và con số"];
+const THINK = ["Kiểm tra danh tính, vai trò và độ tươi nguồn quyền", "Lọc tài liệu theo quyền và kiểm tra an toàn câu hỏi",
+  "Tìm kiếm lai và xếp hạng lại", "Hỏi lại SharePoint bằng danh tính của bạn", "Model local đọc tài liệu và chọn câu trả lời",
+  "Kiểm chứng trích dẫn, con số và quyền lần cuối"];
+// server progress → number of finished rows above (step names come from dr/core/answer.py)
+const STEP_DONE = [["Cổng 4", 1], ["Cổng 1+3", 2], ["Lớp đầu vào", 2], ["Tìm kiếm", 2], ["Rerank", 3],
+  ["Cổng 2 – kiểm tra trực tiếp", 4], ["LLM", 5], ["Thử lại", 5], ["Kiểm chứng", 5]];
+function onProgress(m, ev) {
+  if (ev.stage === "queue") m.queued = true;
+  if (ev.step) {
+    m.queued = false;
+    const hit = STEP_DONE.find(([p]) => ev.step.startsWith(p));
+    if (hit && hit[1] > m.done) { for (let k = m.done; k < hit[1]; k++) m.ms[k] = Date.now() - m.t0; m.done = hit[1]; }
+  }
+  const el = $("#ans-" + CHAT.indexOf(m)); if (el && !m.r) el.innerHTML = renderThinking(m);
+}
 
 function pageChat(page) {
   const canAI = ME.roles.some((r) => r === "Investor.AI" || r === "Staff.AI");
@@ -409,14 +451,18 @@ function renderThread() {
     return;
   }
   updateRecent();
-  inner.innerHTML = CHAT.map((m, i) => `<div class="q-bubble" id="q-${i}">${esc(m.q)}</div><div class="a-card" id="ans-${i}">${m.r ? renderAnswer(m.r, i) : renderThinking(m.step || 0)}</div>`).join("");
+  inner.innerHTML = CHAT.map((m, i) => `<div class="q-bubble" id="q-${i}">${esc(m.q)}</div><div class="a-card" id="ans-${i}">${m.r ? renderAnswer(m.r, i) : renderThinking(m)}</div>`).join("");
   CHAT.forEach((m, i) => { if (m.r) wireAnswer($("#ans-" + i), i); });
   const th = $("#thread"); th.scrollTop = th.scrollHeight;
 }
 
-function renderThinking(step) {
-  return `<div class="a-head"><span class="dot">${icon("spark")}</span> Đang xử lý</div><div class="thinking">${THINK.map((t, i) =>
-    `<div class="row" style="opacity:${i <= step ? 1 : .35}">${i < step ? `<span class="chip ok" style="padding:0 5px">${icon("check")}</span>` : i === step ? '<span class="spinner"></span>' : '<span style="width:14px"></span>'} ${t}</div>`).join("")}</div>`;
+const secs = (ms) => (ms / 1000).toFixed(1).replace(".", ",") + " s";
+function renderThinking(m) {
+  const step = m.done || 0, now = Date.now() - (m.t0 || Date.now());
+  return `<div class="a-head"><span class="dot">${icon("spark")}</span> ${m.queued ? "Đang chờ lượt xử lý" : "Đang xử lý"}
+      <span class="muted small" style="margin-left:auto" data-elapsed>${secs(now)}</span></div>
+    <div class="thinking">${THINK.map((t, i) =>
+    `<div class="row" style="opacity:${i <= step ? 1 : .35}">${i < step ? `<span class="chip ok" style="padding:0 5px">${icon("check")}</span>` : i === step ? '<span class="spinner"></span>' : '<span style="width:14px"></span>'} ${t}${i < step && m.ms ? ` <span class="muted small">${secs(m.ms[i])}</span>` : ""}</div>`).join("")}</div>`;
 }
 
 function renderAnswer(r, i) {
@@ -429,7 +475,7 @@ function renderAnswer(r, i) {
   const fb = r.audit_seq && !r.refused && !r.pending_review && !r.approved ? `<span class="fb">
       <button class="btn icon ghost sm" data-fb="up" title="Câu trả lời đúng" aria-label="Đúng">👍</button>
       <button class="btn icon ghost sm" data-fb="down" title="Câu trả lời sai" aria-label="Sai">👎</button></span>` : "";
-  const head = `<div class="a-head"><span class="dot">${icon("spark")}</span> Trợ lý · ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}${r.audit_seq ? ` · nhật ký #${r.audit_seq}` : ""} ${chips}<span style="flex:1"></span>${fb}</div>`;
+  const head = `<div class="a-head"><span class="dot">${icon("spark")}</span> Trợ lý · ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}${r.elapsed_ms ? ` · ${secs(r.elapsed_ms)}` : ""}${r.audit_seq ? ` · nhật ký #${r.audit_seq}` : ""} ${chips}<span style="flex:1"></span>${fb}</div>`;
   const trace = `<details class="trace"><summary>${icon("shield")} Chi tiết 4 cổng quyền và các bước (${(r.trace || []).length})</summary><ol class="steps">${(r.trace || []).map((s) => {
     const { step, ok, ms, ...rest } = s;
     const d = Object.entries(rest).filter(([, v]) => v !== null && v !== "" && !(Array.isArray(v) && !v.length)).map(([k, v]) => `${k}: ${typeof v === "object" ? JSON.stringify(v) : v}`).join(" · ");
@@ -481,12 +527,16 @@ function wireAnswer(el, i) {
 
 async function ask(q) {
   if (!q || CHAT.some((m) => !m.r)) return;
-  const m = { q, step: 0 }; CHAT.push(m);
+  const m = { q, done: 0, ms: [], t0: Date.now() }; CHAT.push(m);
   const input = $("#q"); if (input) { input.value = ""; input.style.height = "auto"; }
   renderThread();
-  const timer = setInterval(() => { if (m.step < THINK.length - 1) { m.step++; const el = $("#ans-" + (CHAT.length - 1)); if (el && !m.r) el.innerHTML = renderThinking(m.step); } }, 2600);
+  const timer = setInterval(() => {      // elapsed-time counter only; the steps come from the server
+    const e = $(`#ans-${CHAT.indexOf(m)} [data-elapsed]`); if (e && !m.r) e.textContent = secs(Date.now() - m.t0);
+  }, 100);
   try {
-    m.r = await post("/api/chat", { question: q, scope_site: $("#scope-site")?.value || null });
+    m.r = await postStream("/api/chat/stream", { question: q, scope_site: $("#scope-site")?.value || null },
+                           (ev) => onProgress(m, ev));
+    m.r.elapsed_ms = Date.now() - m.t0;
     if (m.r.pending_review) watchDrafts();
   } catch (e) {
     m.r = { refused: true, message: "Lỗi: " + e.message, trace: [] };

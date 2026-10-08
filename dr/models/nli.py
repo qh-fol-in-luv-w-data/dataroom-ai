@@ -8,6 +8,7 @@ from __future__ import annotations
 import threading
 
 from dr.config import settings
+from dr.models.memo import lru
 
 _tok = _model = None
 _entail_idx = 0
@@ -28,6 +29,7 @@ def _load():
         _entail_idx = labels.get("entailment", 0)
 
 
+@lru(8192)
 def entail(premise: str, hypothesis: str) -> float:
     import torch
     with _lock:
