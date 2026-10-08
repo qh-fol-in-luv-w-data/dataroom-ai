@@ -102,6 +102,16 @@ scripts/        sinh dữ liệu, nạp, tải tài liệu công khai, ma trận
 docs/           spec và kế hoạch triển khai
 ```
 
+## Tính năng theo BRD v1.4
+
+| BRD | Tính năng | Cách hoạt động |
+|---|---|---|
+| BR-11 | **Song ngữ Việt/Anh** | Câu trả lời theo ngôn ngữ của câu hỏi, kể cả câu từ chối. Câu trích luôn giữ nguyên văn bằng ngôn ngữ tài liệu. Con số được kiểm theo giá trị: "2.786,9" và "2,786.9" là cùng một số. Model bge-m3 cho phép hỏi tiếng Anh vẫn tìm được tài liệu tiếng Việt |
+| BR-04 | **Hai chế độ trả lời** | Người có `Investor.AI.Summarize` hoặc `Staff.AI` nhận câu trả lời tổng hợp. Người chỉ có `Investor.AI` dùng *chế độ tra cứu*: chỉ nhận các câu trích nguyên văn đã kiểm chứng |
+| BR-08 | **Duyệt câu hỏi nhạy cảm** | Gồm 6 chủ đề: định giá, giá chào bán, phân bổ, cam kết lợi nhuận/cổ tức, dự báo, tranh chấp. Danh sách sửa được trong `data/tenant/sensitive_topics.json`. Câu trả lời cho nhà đầu tư thành bản nháp. Reviewer **chỉ xem và duyệt được khi chính mình có quyền đọc mọi file được trích dẫn**. Reviewer sửa lời từng ý, bỏ ý, duyệt hoặc từ chối kèm ghi chú, và mọi bước đều ghi nhật ký. Khi người hỏi mở câu trả lời đã duyệt, hệ thống hỏi lại SharePoint *bằng danh tính người hỏi* và so đúng phiên bản file. Ý nào người hỏi không còn quyền, hoặc file đã đổi phiên bản, thì bị rút lại. Nhân viên (`Staff.AI`) nhận trả lời trực tiếp |
+| BR-02 | **Tìm hồ sơ** | Trang tìm kiếm theo từ khóa, nội dung hoặc ý nghĩa, không cần nhớ tên file. Qua đủ cổng 4, RLS và kiểm tra trực tiếp. Chỉ trả về file AI được dùng, kèm đoạn trích có tô đậm từ khóa, link file và link public thư mục |
+| Chức năng 10 | **Phản hồi đúng/sai** | Nút 👍/👎 trên câu trả lời, có ghi chú khi sai. Phản hồi lưu vào chuỗi nhật ký; người dùng chỉ phản hồi được câu trả lời của chính mình |
+
 ## Lớp bảo mật đầu vào (L2), che dữ liệu cá nhân, hạn mức
 
 Lớp L2 nằm trong `dr/security/`, chạy local và không tải thêm model.
