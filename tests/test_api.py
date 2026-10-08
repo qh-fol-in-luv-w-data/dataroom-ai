@@ -40,8 +40,7 @@ def login(client, oid):
 
 
 def test_scope_matches_sharepoint(client):
-    h = login(client, "inv-a1")
-    sc = client.get("/api/scope", headers=h).json()
+    sc = client.get("/api/scope_of/inv-a1", headers=login(client, "admin")).json()
     ids = {f["item_id"] for s in sc["sites"] for fo in s["folders"] for f in fo["files"]}
     t = appmod.S.tenant
     assert ids == {i for i in t.items if t.sp_can_read("inv-a1", i)}
@@ -78,7 +77,7 @@ def test_remove_from_group_scenario(client):
     ha = login(client, "admin")
     client.post("/api/scenario/remove_from_group", headers=ha, json={"params": {"oid": "inv-ab", "group": "DR-INV-A"}})
     appmod.S.connector.poll_once()
-    sc = client.get("/api/scope", headers=h).json()
+    sc = client.get("/api/scope_of/inv-ab", headers=ha).json()
     statuses = {f["item_id"]: f["status"] for s in sc["sites"] for fo in s["folders"] for f in fo["files"]}
     assert statuses.get("a1") == "ai_blocked"   # SharePoint still lets them open it (lag), AI does not
     assert statuses.get("b1") == "ai_ok"
@@ -103,13 +102,13 @@ def test_admin_grant_and_revoke_via_api(client):
     r = client.post("/api/admin/grants", headers=ha, json={"target": "item", "site": "COMMON", "key": "c1",
                                                            "kind": "group", "id": "DR-INV-B", "add": False})
     assert r.status_code == 200
-    sc = client.get("/api/scope", headers=hb).json()
+    sc = client.get("/api/scope_of/inv-b1", headers=ha).json()
     assert "c1" not in {f["item_id"] for s in sc["sites"] for fo in s["folders"] for f in fo["files"]}
     tree = client.get("/api/admin/tree/COMMON", headers=ha).json()
     f = next(x for fo in tree["folders"] for x in fo["files"] if x["item_id"] == "c1")
     assert f["unique"] and "DR-INV-B" not in {g["id"] for g in f["grants"]}
     client.post("/api/admin/grants/inherit", headers=ha, json={"target": "item", "site": "COMMON", "key": "c1"})
-    sc = client.get("/api/scope", headers=hb).json()
+    sc = client.get("/api/scope_of/inv-b1", headers=ha).json()
     assert "c1" in {f["item_id"] for s in sc["sites"] for fo in s["folders"] for f in fo["files"]}
 
 
@@ -171,3 +170,7 @@ def test_citations_carry_no_web_url_in_demo(client):
     h = login(client, "inv-a1")
     r = client.post("/api/chat", headers=h, json={"question": "phí thu xếp nhóm A"}).json()
     assert not r["refused"] and all(c["web_url"] is None for c in r["citations"])
+
+
+def test_users_cannot_read_scope(client):
+    assert client.get("/api/scope", headers=login(client, "inv-a1")).status_code in (404, 405)

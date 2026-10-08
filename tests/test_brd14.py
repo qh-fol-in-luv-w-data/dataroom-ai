@@ -28,7 +28,18 @@ def test_quote_mode_without_summarize_role(client):
     assert r["mode"] == "summary" and not r["claims"][0]["text"].startswith("“")
 
 
-def test_sensitive_question_goes_through_review(client):
+def test_sensitive_question_points_to_contact(client):
+    r = client.post("/api/chat", headers=login(client, "inv-a1"),
+                    json={"question": "Định giá phí thu xếp nhóm A thế nào?"}).json()
+    assert r["refused"] and r["sensitive"] and "Trần Kim Chung" in r["message"] and not r["claims"]
+    r = client.post("/api/chat", headers=login(client, "inv-a1"),
+                    json={"question": "What is the expected offering price?"}).json()
+    assert r["sensitive"] and r["message"].startswith("This topic is sensitive")
+
+
+def test_sensitive_question_goes_through_review(client, monkeypatch):
+    from dr.config import settings
+    monkeypatch.setattr(settings, "sensitive_mode", "review")
     ha, rev, rx = login(client, "inv-a1"), login(client, "rev-1"), login(client, "rev-x")
     r = client.post("/api/chat", headers=ha, json={"question": "Định giá phí thu xếp nhóm A thế nào?"}).json()
     assert r["pending_review"] and not r["claims"] and "Định giá" in r["topics"][0]

@@ -91,7 +91,7 @@ label.field { display: grid; gap: 6px; font-weight: 500; color: var(--ink-2); fo
 .demo-list .who { display: grid; line-height: 1.3; } .demo-list .who small { color: var(--muted); }
 
 /* ---------- app shell ---------- */
-.shell { display: grid; grid-template-columns: 252px 1fr; min-height: 100vh; }
+.shell { display: grid; grid-template-columns: 268px 1fr; min-height: 100vh; }
 .sidebar { background: var(--sidebar); color: var(--sidebar-ink); display: flex; flex-direction: column; position: sticky; top: 0; height: 100vh; }
 .sb-top { display: flex; align-items: center; gap: 10px; padding: 18px 18px 14px; color: #fff; font-weight: 700; }
 .sb-top small { display: block; color: var(--sidebar-muted); font-weight: 500; font-size: 11px; }
@@ -263,3 +263,50 @@ pre.payload { margin: 0; font-family: var(--mono); font-size: 11px; white-space:
 .sr mark { background: #fff3a3; color: inherit; padding: 0 1px; border-radius: 2px; }
 [data-theme="dark"] .sr mark { background: #6b5a00; }
 [data-theme="dark"] .pending { background: #2b2410; border-color: #5c4a12; }
+
+/* sensitive question: pointed to a person, no answer */
+.sensitive { display: flex; gap: 12px; align-items: center; padding: 14px 16px; border-radius: 12px; margin: 6px 0;
+  background: #fef6ee; border: 1px solid #f9dbaf; color: #93370d; }
+.sensitive svg.i { width: 22px; height: 22px; flex: none; }
+[data-theme="dark"] .sensitive { background: #2f1d0e; border-color: #6b3b14; color: #fbcfa0; }
+
+/* ---------------------------------------------------------------- sidebar v2 */
+.sidebar { background:
+  radial-gradient(120% 60% at 0% 0%, rgba(47,179,155,.18), transparent 60%),
+  linear-gradient(180deg, #0c2230 0%, #0a1b26 55%, #08151e 100%); border-right: 1px solid rgba(255,255,255,.04); }
+[data-theme="dark"] .sidebar { background:
+  radial-gradient(120% 60% at 0% 0%, rgba(47,179,155,.14), transparent 60%), linear-gradient(180deg, #08131b, #060e14); }
+.sb-brand { display: flex; align-items: center; gap: 12px; padding: 22px 20px 18px; }
+.sb-brand b { display: block; color: #fff; font-size: 15px; letter-spacing: .01em; }
+.sb-brand small { display: block; color: var(--sidebar-muted); font-size: 11.5px; margin-top: 1px; }
+.sb-logo { width: 38px; height: 38px; border-radius: 11px; display: grid; place-items: center; font-weight: 800; font-size: 13px;
+  color: #fff; background: linear-gradient(135deg, #2fb39b, #0e6b5c 60%, #0a4f45); box-shadow: 0 6px 18px rgba(47,179,155,.35); }
+.sb-new { margin: 0 16px 10px; display: flex; align-items: center; justify-content: center; gap: 8px; height: 40px; border-radius: 10px;
+  border: 1px solid rgba(47,179,155,.45); background: rgba(47,179,155,.12); color: #d6f5ee; font-weight: 600; cursor: pointer;
+  transition: background .15s, border-color .15s; }
+.sb-new:hover { background: rgba(47,179,155,.22); border-color: #2fb39b; }
+.sb-new svg.i { width: 16px; height: 16px; }
+.sb-nav { padding: 4px 12px 8px; gap: 3px; }
+.sb-sec { padding: 16px 10px 6px; font-size: 10.5px; font-weight: 700; letter-spacing: .1em; color: #6f8494; }
+.sb-nav a { height: 40px; padding: 0 10px; gap: 11px; border-radius: 10px; color: #b9c6cf; transition: background .15s, color .15s; }
+.sb-ico { width: 28px; height: 28px; border-radius: 8px; display: grid; place-items: center; background: rgba(255,255,255,.05);
+  transition: background .15s, color .15s; }
+.sb-ico svg.i { width: 16px; height: 16px; }
+.sb-nav a:hover { background: rgba(255,255,255,.05); color: #fff; }
+.sb-nav a.active { background: rgba(47,179,155,.14); color: #fff; box-shadow: none; font-weight: 600; }
+.sb-nav a.active .sb-ico { background: #2fb39b; color: #062a23; }
+.sb-recent { display: grid; gap: 1px; }
+.sb-recent button { display: flex; align-items: center; gap: 9px; width: 100%; padding: 7px 10px; border: 0; border-radius: 8px;
+  background: transparent; color: #9fb0bc; font: inherit; font-size: 12.5px; text-align: left; cursor: pointer; }
+.sb-recent button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sb-recent button svg.i { width: 13px; height: 13px; flex: none; opacity: .6; }
+.sb-recent button:hover { background: rgba(255,255,255,.05); color: #fff; }
+.sb-empty { padding: 6px 10px; color: #5f7382; font-size: 12px; }
+.sb-user { margin: 10px 12px 14px; padding: 10px 10px 10px 12px; border-radius: 12px; border: 1px solid rgba(255,255,255,.06);
+  background: rgba(255,255,255,.04); }
+.sb-user .who b { font-size: 13.5px; }
+.sb-user .who small { font-size: 11.5px; color: #86c9bb; }
+@media (max-width: 900px) { .sidebar { width: 280px; } }
+.sb-nav { align-content: start; overflow-x: hidden; }
+.sb-nav > *, .sb-recent, .sb-recent button { min-width: 0; }
+.sb-nav a > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

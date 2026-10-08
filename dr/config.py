@@ -40,6 +40,11 @@ class Settings:
     rate_per_minute: int = int(_env("DR_RATE_MIN", "8"))
     rate_per_hour: int = int(_env("DR_RATE_HOUR", "60"))
     llm_concurrency: int = int(_env("DR_LLM_CONCURRENCY", "2"))
+    # Sensitive questions: "contact" = not answered, the asker is pointed to a named person;
+    # "review" = answered as a draft that a Reviewer must approve (dr/core/review.py).
+    sensitive_mode: str = _env("DR_SENSITIVE_MODE", "contact")
+    sensitive_contact: str = _env("DR_SENSITIVE_CONTACT", "chú Trần Kim Chung")
+    sensitive_contact_en: str = _env("DR_SENSITIVE_CONTACT_EN", "Mr. Tran Kim Chung")
     search_backend: str = _env("DR_SEARCH", "pg")
     tenant_mode: str = _env("DR_TENANT", "fake")          # fake (simulated SharePoint/Entra) | m365 (Microsoft Graph)
     m365_config: Path = field(default_factory=lambda: Path(_env("DR_M365_CONFIG", str(ROOT / "data" / "m365.json"))))  # pg (pgvector + BM25 in Postgres, RLS in the query) | memory

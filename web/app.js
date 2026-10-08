@@ -231,16 +231,11 @@ function renderLoginMicrosoft(message) {
 const NAV = [
   { sec: "Trợ lý", items: [
     { id: "chat", label: "Hỏi đáp", icon: "chat", who: "user" },
-    { id: "search", label: "Tìm hồ sơ", icon: "search", who: "user" },
-    { id: "drafts", label: "Câu hỏi chờ duyệt", icon: "list", who: "user" },
-    { id: "scope", label: "Phạm vi truy xuất", icon: "folder", who: "user" },
-  ] },
-  { sec: "Người duyệt", items: [
-    { id: "review", label: "Duyệt câu trả lời", icon: "check", who: "reviewer" },
   ] },
   { sec: "Quản trị Data Room", items: [
     { id: "perms", label: "Phân quyền", icon: "key", who: "admin" },
     { id: "matrix", label: "Ma trận quyền", icon: "grid", who: "admin" },
+    { id: "scope", label: "Phạm vi truy xuất", icon: "folder", who: "admin" },
     { id: "scenarios", label: "Kịch bản demo", icon: "play", who: "admin" },
     { id: "audit", label: "Nhật ký", icon: "list", who: "admin" },
     { id: "system", label: "Hệ thống", icon: "activity", who: "admin" },
@@ -251,7 +246,7 @@ const TITLES = {
   search: ["Tìm hồ sơ", "Tìm theo từ khóa, nội dung hoặc ý nghĩa — chỉ trong phạm vi của bạn"],
   drafts: ["Câu hỏi chờ duyệt", "Câu hỏi thuộc chủ đề nhạy cảm được Ban IPO xem xét trước khi trả lời"],
   review: ["Duyệt câu trả lời", "Bản nháp cho câu hỏi nhạy cảm — chỉ xem được khi bạn có quyền trên mọi nguồn"],
-  scope: ["Phạm vi truy xuất", "RAG của bạn truy xuất được đến đâu"],
+  scope: ["Phạm vi truy xuất", "Chọn một người dùng để xem AI truy xuất được đến đâu cho người đó"],
   perms: ["Phân quyền", "Người dùng, nhóm, thư mục, tài liệu — nguồn sự thật là SharePoint/Entra"],
   matrix: ["Ma trận quyền", "Mỗi người × mỗi site: AI dùng được / SharePoint cho mở"],
   scenarios: ["Kịch bản demo", "Tái hiện các tình huống thu hồi quyền trong kế hoạch"],
@@ -260,6 +255,19 @@ const TITLES = {
 };
 
 const isAdmin = () => ME && ME.type === "admin";
+const roleLabel = () => isAdmin() ? "Quản trị Data Room"
+  : (ME.roles || []).includes("Staff.AI") ? (ME.type === "guest" ? "Cố vấn" : "Nhân viên")
+  : ME.type === "guest" ? "Nhà đầu tư" : "Người dùng";
+function updateRecent() {
+  const el = $("#sb-recent"); if (!el) return;
+  const items = CHAT.map((m, i) => [m, i]).reverse().slice(0, 12);
+  el.innerHTML = items.length ? items.map(([m, i]) => `<button data-i="${i}" title="${esc(m.q)}">${icon("chat")}<span>${esc(m.q)}</span></button>`).join("")
+    : '<div class="sb-empty">Chưa có câu hỏi nào trong phiên này</div>';
+  $$("button", el).forEach((b) => b.onclick = () => {
+    if (!location.hash.startsWith("#/chat")) location.hash = "#/chat";
+    setTimeout(() => { const t = $("#q-" + b.dataset.i); if (t) { t.scrollIntoView({ behavior: "smooth", block: "start" }); } $("#sidebar").classList.remove("open"); }, 60);
+  });
+}
 const visibleNav = (i) => i.who === "admin" ? isAdmin()
   : i.who === "reviewer" ? !isAdmin() && (ME.roles || []).includes("Reviewer") : !isAdmin();
 
@@ -267,12 +275,15 @@ function renderShell() {
   $("#app").innerHTML = `
   <div class="shell">
     <aside class="sidebar" id="sidebar">
-      <div class="sb-top"><span class="logo-mark" style="width:34px;height:34px;font-size:13px">SM</span><div>Data Room AI<small>Sao Mai · IPO 2026</small></div></div>
+      <div class="sb-brand"><span class="sb-logo">SM</span><div><b>Data Room AI</b><small>Sao Mai · IPO 2026</small></div></div>
+      ${isAdmin() ? "" : `<button class="sb-new" id="new-chat">${icon("plus")}<span>Cuộc hỏi mới</span></button>`}
       <nav class="sb-nav" aria-label="Điều hướng">${NAV.map((s) => {
         const items = s.items.filter(visibleNav);
-        return items.length ? `<div class="sb-sec">${s.sec}</div>` + items.map((i) => `<a href="#/${i.id}" data-id="${i.id}">${icon(i.icon)}${i.label}</a>`).join("") : "";
-      }).join("")}</nav>
-      <div class="sb-user">${avatar(ME.name, 34)}<div class="who"><b>${esc(ME.name)}</b><small>${esc(ME.email)}</small></div>
+        return items.length ? (isAdmin() ? `<div class="sb-sec">${s.sec}</div>` : "") + items.map((i) =>
+          `<a href="#/${i.id}" data-id="${i.id}"><span class="sb-ico">${icon(i.icon)}</span><span>${i.label}</span></a>`).join("") : "";
+      }).join("")}
+        ${isAdmin() ? "" : '<div class="sb-sec">Câu đã hỏi</div><div class="sb-recent" id="sb-recent"></div>'}</nav>
+      <div class="sb-user">${avatar(ME.name, 36)}<div class="who"><b>${esc(ME.name)}</b><small>${esc(roleLabel())}</small></div>
         <button class="btn icon" id="logout" title="Đăng xuất" aria-label="Đăng xuất">${icon("logout")}</button></div>
     </aside>
     <div class="main">
@@ -287,6 +298,9 @@ function renderShell() {
     </div>
   </div>`;
   $("#logout").onclick = () => logout();
+  const nc = $("#new-chat");
+  if (nc) nc.onclick = () => { if (CHAT.some((m) => !m.r)) return; CHAT.length = 0; location.hash = "#/chat"; renderThread(); updateRecent(); $("#q")?.focus(); };
+  updateRecent();
   $("#menu").onclick = () => $("#sidebar").classList.toggle("open");
   $("#theme").onclick = () => {
     const t = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
@@ -321,7 +335,7 @@ async function boot() {
 
 // ------------------------------------------------------------------ status pills
 async function pollStatus() {
-  if (!TOKEN || !ME) return;
+  if (!TOKEN || !ME || !isAdmin()) return;
   try { STATUS_CACHE = await api("/api/status"); } catch { return; }
   const s = STATUS_CACHE, age = (k) => s.feeds[k] ?? 1e9;
   const p = (txt, cls, title = "") => `<span class="chip ${cls}" title="${esc(title)}">${txt}</span>`;
@@ -338,20 +352,21 @@ setInterval(pollStatus, 3000);
 
 // ------------------------------------------------------------------ chat
 const CHAT = [];
-const SUGGEST = [
-  ["Chung", "Doanh thu thuần năm 2025 của Sao Mai là bao nhiêu?"],
-  ["Chung", "Tổng công suất lắp đặt các nhà máy là bao nhiêu MW?"],
-  ["Chung", "Đợt IPO chào bán bao nhiêu cổ phần?"],
-  ["Nhóm A", "Phí thu xếp áp dụng cho nhóm quỹ trong nước là bao nhiêu?"],
-  ["Nhóm B", "Tỷ lệ room ngoại dành riêng cho Nhóm B là bao nhiêu?"],
-  ["Nhóm C", "Giá chào bán riêng cho nhà đầu tư chiến lược là bao nhiêu?"],
-  ["Nội bộ", "Định giá nội bộ của Sao Mai là bao nhiêu?"],
-  ["Scan", "Biên bản xác nhận công suất lắp đặt các nhà máy ghi gì?"],
-  ["English", "What was Sao Mai's net revenue in 2025?"],
-  ["Nhạy cảm", "Giá chào bán dự kiến trong đợt IPO là bao nhiêu?"],
-  ["Ảnh chụp", "Đơn giá điện năng bán ra tháng 06/2026 trên hóa đơn ký hiệu 1C26TAA là bao nhiêu?"],
-  ["Fax", "Tổng cộng tiền thanh toán trên hóa đơn ký hiệu 1C25TSS số 00004299 là bao nhiêu?"],
+const SUGGEST = [   // [label, question, group needed (null = everyone), staff only]
+  ["Tài chính", "Doanh thu thuần năm 2025 của Sao Mai là bao nhiêu?", null],
+  ["Nhà máy", "Tổng công suất lắp đặt các nhà máy là bao nhiêu MW?", null],
+  ["Đợt IPO", "Đợt IPO chào bán bao nhiêu cổ phần?", null],
+  ["Thỏa thuận", "Phí thu xếp áp dụng cho nhóm quỹ trong nước là bao nhiêu?", "DR-INV-A"],
+  ["Thỏa thuận", "Tỷ lệ room ngoại dành riêng cho Nhóm B là bao nhiêu?", "DR-INV-B"],
+  ["Thỏa thuận", "Nhà đầu tư chiến lược được đề cử bao nhiêu thành viên HĐQT?", "DR-INV-C"],
+  ["Nội bộ", "Khoản dự phòng tranh chấp với nhà thầu là bao nhiêu?", null, true],
+  ["Bản scan", "Biên bản xác nhận công suất lắp đặt các nhà máy ghi gì?", null],
+  ["English", "What was Sao Mai's net revenue in 2025?", null],
 ];
+const mySuggestions = () => {
+  const staff = (ME.roles || []).includes("Staff.AI");
+  return SUGGEST.filter(([, , grp, staffOnly]) => staff ? true : !staffOnly && (!grp || (ME.groups || []).includes(grp)));
+};
 const THINK = ["Kiểm tra danh tính, vai trò và độ tươi nguồn quyền", "Lọc tài liệu theo quyền (RLS)", "Tìm kiếm lai và xếp hạng lại",
   "Hỏi lại SharePoint bằng danh tính của bạn", "Sinh câu trả lời bằng model local", "Kiểm chứng trích dẫn nguyên văn và con số"];
 
@@ -386,16 +401,15 @@ function renderThread() {
   if (!CHAT.length) {
     inner.innerHTML = `<div class="hero">
       <h2>Xin chào, ${esc(ME.name.split(" ").slice(-1)[0])}</h2>
-      <p>Hỏi bằng tiếng Việt có dấu hoặc không dấu. Trợ lý đọc được Word, Excel, PowerPoint, PDF, bản scan có dấu đỏ, email và ảnh — nhưng chỉ trong phạm vi quyền của bạn.</p>
-      <div class="scope-strip">${ME.groups.map((g) => `<span class="chip brand">${icon("users")} ${GROUP_LABEL[g] || g}</span>`).join("")}
-        ${ME.roles.map((r) => `<span class="chip info">${ROLE_LABEL[r] || r}</span>`).join("")}
-        ${ME.roles.some((r) => r.endsWith(".AI")) ? "" : '<span class="chip bad">Không có quyền AI</span>'}</div>
-      <div class="suggest">${SUGGEST.map(([tag, s]) => `<button type="button" data-q="${esc(s)}"><small>${tag}</small>${esc(s)}</button>`).join("")}</div>
+      <p>Hỏi bằng tiếng Việt (có dấu hoặc không dấu) hoặc tiếng Anh. Mỗi câu trả lời đều kèm trích dẫn nguyên văn và link tới tài liệu gốc trên SharePoint.</p>
+      ${ME.roles.some((r) => r.endsWith(".AI")) ? "" : '<div class="scope-strip"><span class="chip bad">Tài khoản chưa được cấp quyền dùng trợ lý AI</span></div>'}
+      <div class="suggest">${mySuggestions().map(([tag, s]) => `<button type="button" data-q="${esc(s)}"><small>${tag}</small>${esc(s)}</button>`).join("")}</div>
     </div>`;
     $$(".suggest button", inner).forEach((b) => b.onclick = () => ask(b.dataset.q));
     return;
   }
-  inner.innerHTML = CHAT.map((m, i) => `<div class="q-bubble">${esc(m.q)}</div><div class="a-card" id="ans-${i}">${m.r ? renderAnswer(m.r, i) : renderThinking(m.step || 0)}</div>`).join("");
+  updateRecent();
+  inner.innerHTML = CHAT.map((m, i) => `<div class="q-bubble" id="q-${i}">${esc(m.q)}</div><div class="a-card" id="ans-${i}">${m.r ? renderAnswer(m.r, i) : renderThinking(m.step || 0)}</div>`).join("");
   CHAT.forEach((m, i) => { if (m.r) wireAnswer($("#ans-" + i), i); });
   const th = $("#thread"); th.scrollTop = th.scrollHeight;
 }
@@ -415,12 +429,13 @@ function renderAnswer(r, i) {
   const fb = r.audit_seq && !r.refused && !r.pending_review && !r.approved ? `<span class="fb">
       <button class="btn icon ghost sm" data-fb="up" title="Câu trả lời đúng" aria-label="Đúng">👍</button>
       <button class="btn icon ghost sm" data-fb="down" title="Câu trả lời sai" aria-label="Sai">👎</button></span>` : "";
-  const head = `<div class="a-head"><span class="dot">${icon("spark")}</span> Trợ lý · ${new Date().toLocaleTimeString().slice(0, 5)}${r.audit_seq ? ` · nhật ký #${r.audit_seq}` : ""} ${chips}<span style="flex:1"></span>${fb}</div>`;
+  const head = `<div class="a-head"><span class="dot">${icon("spark")}</span> Trợ lý · ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}${r.audit_seq ? ` · nhật ký #${r.audit_seq}` : ""} ${chips}<span style="flex:1"></span>${fb}</div>`;
   const trace = `<details class="trace"><summary>${icon("shield")} Chi tiết 4 cổng quyền và các bước (${(r.trace || []).length})</summary><ol class="steps">${(r.trace || []).map((s) => {
     const { step, ok, ms, ...rest } = s;
     const d = Object.entries(rest).filter(([, v]) => v !== null && v !== "" && !(Array.isArray(v) && !v.length)).map(([k, v]) => `${k}: ${typeof v === "object" ? JSON.stringify(v) : v}`).join(" · ");
     return `<li><span class="s-dot ${ok ? "" : "bad"}">${ok ? "✓" : "✕"}</span><span>${esc(step)}</span><span class="muted small">${ms} ms</span>${d ? `<span class="s-d">${esc(d)}</span>` : ""}</li>`;
   }).join("")}</ol></details>`;
+  if (r.sensitive) return `${head}<div class="sensitive">${icon("users")}<div><b>${esc(r.message)}</b></div></div>`;
   if (r.refused) return `${head}<div class="refused">${icon("info")}<div>${esc(r.message)}</div></div>${trace}`;
   if (r.pending_review) return `${head}<div class="pending"><span class="spinner"></span><div><b>${esc(r.message)}</b>
       <div class="chips" style="margin-top:6px">${(r.topics || []).map((t) => `<span class="chip warn">${esc(t)}</span>`).join("")}</div>
@@ -619,11 +634,20 @@ function renderTree(sc, filter, q) {
   }).join("") || '<div class="card empty">Không có tài liệu phù hợp.</div>';
 }
 
+let SCOPE_USER = null;
 async function pageScope(page) {
-  page.innerHTML = `<div class="stats" id="stats"></div>
+  if (!DIR) await loadDir();
+  SCOPE_USER = SCOPE_USER || DIR.users[0]?.oid;
+  page.innerHTML = `<div class="toolbar"><label class="field" style="margin:0;flex:1;max-width:420px">Người dùng
+      <select class="input" id="scope-user">${DIR.users.map((u) => `<option value="${u.oid}" ${u.oid === SCOPE_USER ? "selected" : ""}>${esc(u.name)} — ${esc(u.org)}</option>`).join("")}</select></label>
+      <div class="chips" id="scope-who" style="align-self:flex-end"></div></div>
+    <div class="stats" id="stats"></div>
     <div class="toolbar"><div class="search">${icon("search")}<input class="input" id="sq" placeholder="Tìm theo tên file…" value="${esc(SCOPE_Q)}"></div>
     <span class="muted small" id="scope-note"></span></div><div id="tree"><div class="card empty">Đang tải…</div></div>`;
-  const sc = await api("/api/scope");
+  $("#scope-user").onchange = (e) => { SCOPE_USER = e.target.value; pageScope(page); };
+  const sc = await api("/api/scope_of/" + encodeURIComponent(SCOPE_USER));
+  $("#scope-who").innerHTML = sc.groups.map((g) => `<span class="chip brand">${esc(GROUP_LABEL[g] || g)}</span>`).join("")
+    + sc.roles.map((r) => `<span class="chip info">${esc(ROLE_LABEL[r] || r)}</span>`).join("");
   const draw = () => {
     $("#stats").innerHTML = scopeStats(sc).map(([k, l, v, cls]) => `<button class="stat ${cls} ${(SCOPE_FILTER || "all") === k ? "sel" : ""}" data-k="${k}"><div class="v">${v}</div><div class="l">${l}</div></button>`).join("");
     $$("#stats .stat").forEach((b) => b.onclick = () => { SCOPE_FILTER = b.dataset.k === "all" ? null : b.dataset.k; draw(); });

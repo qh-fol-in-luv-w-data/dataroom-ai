@@ -367,13 +367,6 @@ def _ai_status(it: dict, db: dict | None, ai_items: dict) -> tuple[str, str]:
     return "ai_blocked", "AI đang chặn (thu hồi/chờ SharePoint)"
 
 
-@app.get("/api/scope")
-def scope(claims: dict = Depends(current)):
-    if claims.get("admin"):
-        raise HTTPException(400, "Hãy chọn một danh tính người dùng")
-    return _scope(claims["oid"])
-
-
 @app.get("/api/scope_of/{oid}")
 def scope_of(oid: str, _: dict = Depends(admin_only)):
     if oid not in S.tenant.users:
