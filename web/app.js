@@ -410,12 +410,19 @@ function renderAnswer(r, i) {
       <blockquote>${esc(c.quote)}</blockquote>
       ${c.crop ? `<figure class="crop"><img loading="lazy" alt="Vùng tương ứng trên bản scan gốc" src="/crop/${encodeURIComponent(c.item_id)}?t=${encodeURIComponent(TOKEN)}&page=${encodeURIComponent(c.crop.page)}${c.crop.box ? "&box=" + c.crop.box.join(",") : ""}"><figcaption>${c.crop.box ? "Vùng gốc trên bản scan (đã nắn thẳng)" : "Trang scan gốc (đã nắn thẳng)"}</figcaption></figure>` : ""}
       <div class="cite-foot"><span class="chip">${esc(SITE_LABEL[c.site_id] || c.site_id)}</span>${c.ocr ? '<span class="chip info" title="PaddleOCR-VL">văn bản nhận dạng từ bản scan</span>' : ""}
-        <span style="flex:1"></span><a href="${c.web_url ? esc(c.web_url) : `/open/${encodeURIComponent(c.item_id)}?t=${encodeURIComponent(TOKEN)}`}" target="_blank" rel="noopener">Mở trên SharePoint ${icon("ext")}</a></div>
+        <span style="flex:1"></span><a href="${c.web_url ? esc(c.web_url) : `/open/${encodeURIComponent(c.item_id)}?t=${encodeURIComponent(TOKEN)}`}" target="_blank" rel="noopener" title="Mở thẳng file (cần đăng nhập SharePoint)">${icon("file")} Mở file ${icon("ext")}</a></div>
+      ${c.public ? `<div class="cite-public">${icon("globe")} <a href="${esc(c.public.url)}" target="_blank" rel="noopener" title="Link công khai chỉ xem, không cần đăng nhập">Link public thư mục ${esc(c.public.folder)}</a>
+        <span class="muted"> › ${esc(c.public.path.replace(/\//g, " › "))}</span>
+        <button class="btn ghost sm" data-copy="${esc(c.public.url)}" title="Sao chép link public">Sao chép</button></div>` : ""}
     </div>`).join("")}</div>`;
   return head + claims + cites + trace;
 }
 
 function wireAnswer(el, i) {
+  $$("[data-copy]", el).forEach((b) => b.onclick = async () => {
+    try { await navigator.clipboard.writeText(b.dataset.copy); toast("Đã sao chép link public"); }
+    catch { toast("Không sao chép được, hãy bấm chuột phải vào link", "bad"); }
+  });
   $$(".crop img", el).forEach((im) => {
     im.onclick = () => im.parentElement.classList.toggle("big");
     im.onerror = () => im.parentElement.remove();   // no permission or page gone: hide quietly

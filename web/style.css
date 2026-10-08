@@ -246,3 +246,8 @@ pre.payload { margin: 0; font-family: var(--mono); font-size: 11px; white-space:
 .crop img { display: block; width: 100%; max-height: 220px; object-fit: contain; object-position: left top; cursor: zoom-in; }
 .crop.big img { max-height: none; cursor: zoom-out; }
 .crop figcaption { font-size: 11px; color: var(--muted); padding: 4px 8px; border-top: 1px solid var(--line); background: var(--surface-2); }
+
+/* public (view-only) folder link + path to the file inside it */
+.cite-public { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 6px; padding-top: 6px;
+  border-top: 1px dashed var(--line); font-size: 12px; }
+.cite-public .muted { overflow-wrap: anywhere; }
