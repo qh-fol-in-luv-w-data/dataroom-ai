@@ -17,6 +17,8 @@ from dr import audit
 from dr.config import BLOCKED_MESSAGE, NEUTRAL_REFUSAL, RETRY_MESSAGE, UNAVAILABLE_MESSAGE, settings
 from dr.core import gates, verify
 from dr.core.index import SearchIndex
+from dr.core import lang as lang_mod
+from dr.core import review
 from dr.security import guard, pii
 from dr.tenant.service import FakeTenant
 
@@ -124,13 +126,19 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
         deps: Deps, scope_site: str | None = None) -> dict:
     trace = Trace()
     question = question.strip()[:1000]
+    lang = lang_mod.detect(question)
+
+    def refuse(message: str, **kw) -> dict:
+        r = _refuse(oid, question, lang_mod.tr(message, lang), trace, **kw)
+        r["lang"] = lang
+        return r
 
     # ---- gate 4: principal
     g = gates.principal_gate(oid, roles)
     trace.add("Cổng 4 – danh tính, vai trò, độ tươi nguồn quyền", g.ok, reason=g.reason, **(g.detail or {}))
     if not g.ok:
         msg = {"feed_stale": UNAVAILABLE_MESSAGE, "no_ai_role": NO_ROLE_MESSAGE}.get(g.reason, UNAVAILABLE_MESSAGE)
-        return _refuse(oid, question, msg, trace)
+        return refuse(msg)
 
     # ---- gate 1 (+3): RLS over the mirror; revoked group paths already excluded
     if getattr(index, "in_db", False):
@@ -141,7 +149,7 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
     trace.add("Cổng 1+3 – RLS trên bản chép quyền (đã trừ tập thu hồi)", True,
               allowed_chunks=n_allowed, allowed_files=n_files)
     if not n_allowed:
-        return _refuse(oid, question, NEUTRAL_REFUSAL, trace)
+        return refuse(NEUTRAL_REFUSAL)
 
     # ---- layer 2: input security (normalise, injection rules, classifier, personal data)
     if settings.input_guard:
@@ -151,7 +159,7 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
         trace.add("Lớp đầu vào – chuẩn hóa, luật chống prompt injection, bộ phân loại", not v.blocked,
                   rules=v.rules, score=v.score, normalized=v.changed)
         if v.blocked:
-            return _refuse(oid, question, BLOCKED_MESSAGE, trace, kind="input_blocked",
+            return refuse(BLOCKED_MESSAGE, kind="input_blocked",
                            extra={"rules": v.rules, "score": v.score})
         question = clean_q
     else:
@@ -210,11 +218,11 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
     trace.add("Cổng 2 – kiểm tra trực tiếp với SharePoint (lần 1)", True, checked=len(chosen) + len(dropped_live),
               passed=len(chosen), dropped=len(dropped_live))
     if transient and files and files[0] in dropped_live:
-        return _refuse(oid, question, RETRY_MESSAGE, trace)
+        return refuse(RETRY_MESSAGE)
 
     selected = select_passages(order, passages, set(chosen), MAX_PASSAGES, MAX_CHUNKS_PER_FILE)
     if not selected:
-        return _refuse(oid, question, NEUTRAL_REFUSAL, trace)
+        return refuse(NEUTRAL_REFUSAL)
     sel_passages = {c: passages[c] for c in selected}
     flagged = [c for c in selected if passages[c]["injection_flag"]]
     if flagged:
@@ -223,7 +231,7 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
     # ---- LLM
     llm_in = [{"chunk_id": c, "text": passages[c]["text"],
                "source": f'{passages[c]["name"]} · {passages[c]["locator"]}'} for c in selected]
-    raw, labels = deps.llm(question, llm_in)
+    raw, labels = deps.llm(question, llm_in, lang=lang)
     trace.add(f"LLM {settings.llm_model} (JSON có ràng buộc)", True, raw_claims=len(raw.get("claims", [])))
 
     # ---- deterministic verification
@@ -233,7 +241,7 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
     if not kept and len(selected) > FOCUSED_PASSAGES:
         # Small local models lose facts in long contexts: retry once on the top passages only.
         focus = llm_in[:FOCUSED_PASSAGES]
-        raw, labels = deps.llm(question, focus)
+        raw, labels = deps.llm(question, focus, lang=lang)
         kept, dropped2 = verify.check(raw.get("claims", []), labels,
                                       {p["chunk_id"]: sel_passages[p["chunk_id"]] for p in focus}, question)
         dropped += dropped2
@@ -255,10 +263,23 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
     trace.add("Cổng 2 + 4 – kiểm tra lại trước khi trả lời", g2.ok,
               cited_files=len(cited_items), failed=len(failed2))
     if not g2.ok:
-        return _refuse(oid, question, UNAVAILABLE_MESSAGE, trace)
+        return refuse(UNAVAILABLE_MESSAGE)
     if not kept:
-        return _refuse(oid, question, NEUTRAL_REFUSAL, trace,
+        return refuse(NEUTRAL_REFUSAL,
                        extra={"llm_no_answer": raw.get("no_answer"), "dropped": [r for _, r in dropped]})
+
+    # ---- answer mode (BR-04): without a summarize-capable role, only verbatim quotes are shown
+    held_roles = set(g2.detail.get("roles_mirror", []))
+    summarize = bool(held_roles & {"Investor.AI.Summarize", "Staff.AI"})
+    if not summarize:
+        quoted, seen_q = [], set()
+        for cl in kept:
+            for c in cl.citations:
+                if c.quote not in seen_q:
+                    seen_q.add(c.quote)
+                    quoted.append(verify.Claim(f"“{c.quote}”", [c], None))
+        kept = quoted
+        trace.add("Chế độ tra cứu – chỉ trả câu trích nguyên văn (không có quyền tổng hợp)", True, quotes=len(kept))
 
     # ---- build response
     cites, claims_out = [], []
@@ -273,7 +294,7 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
                 quote = c.quote.replace("。", ".").replace("，", ",")
                 cites.append({"n": cite_index[key], "item_id": p["item_id"], "name": p["name"],
                               "locator": p["locator"], "ocr": p["ocr"], "site_id": p["site_id"],
-                              "quote": quote, "chunk_id": c.chunk_id,
+                              "quote": quote, "chunk_id": c.chunk_id, "ctag": p["ctag"],
                               "crop": crop_for(p["ocr_page"], quote) if p["ocr"] and settings.tenant_mode != "m365" else None,
                               "web_url": getattr(tenant, "web_url", lambda _: None)(p["item_id"]),
                               "public": getattr(tenant, "public_url", lambda _: None)(p["item_id"])})
@@ -306,5 +327,11 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
         "dropped_claims": [r for _, r in dropped],
     })
     trace.add("Ghi nhật ký (chuỗi hash)", True, audit_seq=seq)
-    return {"refused": False, "message": None, "claims": claims_out, "citations": cites, "trace": trace.steps,
-            "audit_seq": seq}
+    result = {"refused": False, "message": None, "claims": claims_out, "citations": cites, "trace": trace.steps,
+              "audit_seq": seq, "lang": lang, "mode": "summary" if summarize else "quote"}
+    # ---- sensitive questions (BR-08): investors get the answer only after a reviewer approves it
+    topics = review.topics_of(question)
+    if topics and "Staff.AI" not in held_roles:
+        trace.add("Câu hỏi nhạy cảm → bản nháp chờ người duyệt", True, topics=topics)
+        return review.hold(oid, question, lang, topics, result, lang_mod.tr(review.HOLD_MESSAGE, lang))
+    return result

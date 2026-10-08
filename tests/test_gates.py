@@ -12,7 +12,7 @@ from dr.tenant.service import FakeTenant
 from tests.mini_tenant import Clock, make_tenant
 
 
-def stub_llm(question, passages):
+def stub_llm(question, passages, lang="vi"):
     """Quote the first passage verbatim (first 40 chars)."""
     labels = {f"D{i}": p["chunk_id"] for i, p in enumerate(passages, start=1)}
     q = passages[0]["text"][:40]
@@ -96,7 +96,7 @@ def test_focused_retry_when_llm_finds_nothing(env, monkeypatch):
     tenant, _, ix = env
     calls = []
 
-    def picky_llm(question, passages):
+    def picky_llm(question, passages, lang="vi"):
         calls.append(len(passages))
         if len(passages) > 2:          # simulates a small model lost in many passages
             return {"claims": [], "no_answer": True}, {}

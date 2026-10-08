@@ -262,3 +262,23 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
 $$;
 REVOKE ALL ON FUNCTION fts_candidates(tsquery, integer) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION fts_candidates(tsquery, integer) TO app_query;
+
+-- Sensitive-question review (BRD BR-08): answers held as drafts until a reviewer decides.
+-- Only the gateway (admin connection) touches this table; the reviewer's own SharePoint
+-- access to every cited file is checked in code before a draft is shown or decided.
+CREATE TABLE IF NOT EXISTS review_drafts (
+    draft_id    bigserial PRIMARY KEY,
+    oid         text NOT NULL,
+    question    text NOT NULL,
+    lang        text NOT NULL DEFAULT 'vi',
+    topics      text[] NOT NULL,
+    answer      jsonb NOT NULL,
+    cited_items text[] NOT NULL,
+    status      text NOT NULL DEFAULT 'pending',     -- pending | approved | rejected
+    reviewer    text,
+    note        text,
+    edited      boolean NOT NULL DEFAULT false,
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    decided_at  timestamptz
+);
+CREATE INDEX IF NOT EXISTS review_drafts_oid_idx ON review_drafts (oid);

@@ -28,10 +28,12 @@ def principal_gate(oid: str, token_roles: list[str]) -> GateResult:
     with pg.as_principal(oid) as cur:
         denied = cur.execute("SELECT me_denied()").fetchone()[0]
         mirror_roles = [r for r in AI_ROLES if cur.execute("SELECT me_has_role(%s)", (r,)).fetchone()[0]]
+        extra = [r for r in ("Investor.AI.Summarize", "Reviewer") if r in token_roles
+                 and cur.execute("SELECT me_has_role(%s)", (r,)).fetchone()[0]]
         entra_age = cur.execute("SELECT feed_age('entra')").fetchone()[0]
         drive_age = cur.execute("SELECT feed_age('drive')").fetchone()[0]
     detail = {"entra_feed_age_s": round(entra_age, 1), "drive_feed_age_s": round(drive_age, 1),
-              "roles_token": token_roles, "roles_mirror": mirror_roles}
+              "roles_token": token_roles, "roles_mirror": mirror_roles + extra}
     if entra_age > settings.feed_max_age_seconds or drive_age > settings.feed_max_age_seconds:
         return GateResult(False, "feed_stale", detail)
     if denied:
