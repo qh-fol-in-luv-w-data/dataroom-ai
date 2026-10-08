@@ -77,7 +77,11 @@ class Settings:
 
 settings = Settings()
 
-NEUTRAL_REFUSAL = "Không tìm thấy thông tin phù hợp trong các tài liệu bạn được phép truy cập."
+NEUTRAL_REFUSAL = ("Rất tiếc, chưa tìm thấy thông tin phù hợp trong các tài liệu được chia sẻ với Quý vị. "
+                   "Quý vị có thể diễn đạt lại câu hỏi hoặc liên hệ Ban IPO để được hỗ trợ.")
+OUT_OF_SCOPE_MESSAGE = ("Câu hỏi của Quý vị liên quan đến thông tin dành riêng cho nhóm nhà đầu tư khác, "
+                        "nằm ngoài phạm vi tài liệu được chia sẻ với Quý vị. Rất mong Quý vị thông cảm. "
+                        "Nếu cần hỗ trợ thêm, Quý vị vui lòng liên hệ Ban IPO.")
 BLOCKED_MESSAGE = ("Câu hỏi có dấu hiệu yêu cầu trợ lý bỏ qua quy tắc, tiết lộ cấu hình hoặc vượt quyền, nên không được xử lý. "
                    "Hãy hỏi trực tiếp về nội dung tài liệu.")
 RATE_MESSAGE = "Bạn đang hỏi quá nhanh. Vui lòng thử lại sau {seconds} giây."

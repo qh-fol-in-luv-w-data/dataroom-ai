@@ -482,6 +482,7 @@ function renderAnswer(r, i) {
     return `<li><span class="s-dot ${ok ? "" : "bad"}">${ok ? "✓" : "✕"}</span><span>${esc(step)}</span><span class="muted small">${ms} ms</span>${d ? `<span class="s-d">${esc(d)}</span>` : ""}</li>`;
   }).join("")}</ol></details>`;
   if (r.sensitive) return `${head}<div class="sensitive">${icon("users")}<div><b>${esc(r.message)}</b></div></div>`;
+  if (r.out_of_scope) return `${head}<div class="sensitive scope">${icon("lock")}<div><b>${esc(r.message)}</b></div></div>`;
   if (r.refused) return `${head}<div class="refused">${icon("info")}<div>${esc(r.message)}</div></div>${trace}`;
   if (r.pending_review) return `${head}<div class="pending"><span class="spinner"></span><div><b>${esc(r.message)}</b>
       <div class="chips" style="margin-top:6px">${(r.topics || []).map((t) => `<span class="chip warn">${esc(t)}</span>`).join("")}</div>

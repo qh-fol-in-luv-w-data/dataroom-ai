@@ -60,6 +60,8 @@ def text_of(r: dict) -> str:
 
 
 def outcome(r: dict) -> str:
+    if r.get("out_of_scope"):
+        return "ngoài phạm vi"
     if r.get("sensitive"):
         return "chuyển liên hệ"
     if r["refused"]:
