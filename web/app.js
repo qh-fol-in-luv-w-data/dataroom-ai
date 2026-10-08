@@ -231,7 +231,12 @@ function renderLoginMicrosoft(message) {
 const NAV = [
   { sec: "Trợ lý", items: [
     { id: "chat", label: "Hỏi đáp", icon: "chat", who: "user" },
+    { id: "search", label: "Tìm hồ sơ", icon: "search", who: "user" },
+    { id: "drafts", label: "Câu hỏi chờ duyệt", icon: "list", who: "user" },
     { id: "scope", label: "Phạm vi truy xuất", icon: "folder", who: "user" },
+  ] },
+  { sec: "Người duyệt", items: [
+    { id: "review", label: "Duyệt câu trả lời", icon: "check", who: "reviewer" },
   ] },
   { sec: "Quản trị Data Room", items: [
     { id: "perms", label: "Phân quyền", icon: "key", who: "admin" },
@@ -243,6 +248,9 @@ const NAV = [
 ];
 const TITLES = {
   chat: ["Hỏi đáp", "Chỉ dùng tài liệu bạn được mở trên SharePoint và được phép dùng AI"],
+  search: ["Tìm hồ sơ", "Tìm theo từ khóa, nội dung hoặc ý nghĩa — chỉ trong phạm vi của bạn"],
+  drafts: ["Câu hỏi chờ duyệt", "Câu hỏi thuộc chủ đề nhạy cảm được Ban IPO xem xét trước khi trả lời"],
+  review: ["Duyệt câu trả lời", "Bản nháp cho câu hỏi nhạy cảm — chỉ xem được khi bạn có quyền trên mọi nguồn"],
   scope: ["Phạm vi truy xuất", "RAG của bạn truy xuất được đến đâu"],
   perms: ["Phân quyền", "Người dùng, nhóm, thư mục, tài liệu — nguồn sự thật là SharePoint/Entra"],
   matrix: ["Ma trận quyền", "Mỗi người × mỗi site: AI dùng được / SharePoint cho mở"],
@@ -252,6 +260,8 @@ const TITLES = {
 };
 
 const isAdmin = () => ME && ME.type === "admin";
+const visibleNav = (i) => i.who === "admin" ? isAdmin()
+  : i.who === "reviewer" ? !isAdmin() && (ME.roles || []).includes("Reviewer") : !isAdmin();
 
 function renderShell() {
   $("#app").innerHTML = `
@@ -259,7 +269,7 @@ function renderShell() {
     <aside class="sidebar" id="sidebar">
       <div class="sb-top"><span class="logo-mark" style="width:34px;height:34px;font-size:13px">SM</span><div>Data Room AI<small>Sao Mai · IPO 2026</small></div></div>
       <nav class="sb-nav" aria-label="Điều hướng">${NAV.map((s) => {
-        const items = s.items.filter((i) => (i.who === "admin") === isAdmin());
+        const items = s.items.filter(visibleNav);
         return items.length ? `<div class="sb-sec">${s.sec}</div>` + items.map((i) => `<a href="#/${i.id}" data-id="${i.id}">${icon(i.icon)}${i.label}</a>`).join("") : "";
       }).join("")}</nav>
       <div class="sb-user">${avatar(ME.name, 34)}<div class="who"><b>${esc(ME.name)}</b><small>${esc(ME.email)}</small></div>
@@ -289,7 +299,7 @@ function route() {
   if (!ME) return;
   const def = isAdmin() ? "perms" : "chat";
   let id = (location.hash.replace(/^#\/?/, "") || def).split("?")[0];
-  const allowed = NAV.flatMap((s) => s.items).filter((i) => (i.who === "admin") === isAdmin()).map((i) => i.id);
+  const allowed = NAV.flatMap((s) => s.items).filter(visibleNav).map((i) => i.id);
   if (!allowed.includes(id)) { id = def; history.replaceState(null, "", "#/" + id); }
   $$(".sb-nav a").forEach((a) => a.classList.toggle("active", a.dataset.id === id));
   $("#sidebar").classList.remove("open");
@@ -298,7 +308,7 @@ function route() {
   document.title = `${t} · Data Room AI`;
   const page = $("#page");
   page.className = id === "chat" ? "" : "page";
-  ({ chat: pageChat, scope: pageScope, perms: pagePerms, matrix: pageMatrix, scenarios: pageScenarios, audit: pageAudit, system: pageSystem })[id](page);
+  ({ chat: pageChat, search: pageSearch, drafts: pageDrafts, review: pageReview, scope: pageScope, perms: pagePerms, matrix: pageMatrix, scenarios: pageScenarios, audit: pageAudit, system: pageSystem })[id](page);
 }
 window.addEventListener("hashchange", route);
 
@@ -337,6 +347,8 @@ const SUGGEST = [
   ["Nhóm C", "Giá chào bán riêng cho nhà đầu tư chiến lược là bao nhiêu?"],
   ["Nội bộ", "Định giá nội bộ của Sao Mai là bao nhiêu?"],
   ["Scan", "Biên bản xác nhận công suất lắp đặt các nhà máy ghi gì?"],
+  ["English", "What was Sao Mai's net revenue in 2025?"],
+  ["Nhạy cảm", "Giá chào bán dự kiến trong đợt IPO là bao nhiêu?"],
   ["Ảnh chụp", "Đơn giá điện năng bán ra tháng 06/2026 trên hóa đơn ký hiệu 1C26TAA là bao nhiêu?"],
   ["Fax", "Tổng cộng tiền thanh toán trên hóa đơn ký hiệu 1C25TSS số 00004299 là bao nhiêu?"],
 ];
@@ -394,13 +406,25 @@ function renderThinking(step) {
 }
 
 function renderAnswer(r, i) {
-  const head = `<div class="a-head"><span class="dot">${icon("spark")}</span> Trợ lý · ${new Date().toLocaleTimeString().slice(0, 5)}${r.audit_seq ? ` · nhật ký #${r.audit_seq}` : ""}</div>`;
+  const chips = [
+    r.approved ? `<span class="chip ok" title="Câu hỏi nhạy cảm — đã qua người duyệt">${icon("check")} Ban IPO đã duyệt${r.edited ? " · có hiệu đính" : ""}</span>` : "",
+    r.mode === "quote" ? '<span class="chip" title="Tài khoản chưa có quyền tổng hợp: chỉ trả câu trích nguyên văn">Chế độ tra cứu</span>' : "",
+    r.lang === "en" ? '<span class="chip info">EN</span>' : "",
+    r.withdrawn ? `<span class="chip warn" title="Quyền của bạn đã thay đổi sau khi duyệt">${r.withdrawn} ý đã rút lại</span>` : "",
+  ].join("");
+  const fb = r.audit_seq && !r.refused && !r.pending_review && !r.approved ? `<span class="fb">
+      <button class="btn icon ghost sm" data-fb="up" title="Câu trả lời đúng" aria-label="Đúng">👍</button>
+      <button class="btn icon ghost sm" data-fb="down" title="Câu trả lời sai" aria-label="Sai">👎</button></span>` : "";
+  const head = `<div class="a-head"><span class="dot">${icon("spark")}</span> Trợ lý · ${new Date().toLocaleTimeString().slice(0, 5)}${r.audit_seq ? ` · nhật ký #${r.audit_seq}` : ""} ${chips}<span style="flex:1"></span>${fb}</div>`;
   const trace = `<details class="trace"><summary>${icon("shield")} Chi tiết 4 cổng quyền và các bước (${(r.trace || []).length})</summary><ol class="steps">${(r.trace || []).map((s) => {
     const { step, ok, ms, ...rest } = s;
     const d = Object.entries(rest).filter(([, v]) => v !== null && v !== "" && !(Array.isArray(v) && !v.length)).map(([k, v]) => `${k}: ${typeof v === "object" ? JSON.stringify(v) : v}`).join(" · ");
     return `<li><span class="s-dot ${ok ? "" : "bad"}">${ok ? "✓" : "✕"}</span><span>${esc(step)}</span><span class="muted small">${ms} ms</span>${d ? `<span class="s-d">${esc(d)}</span>` : ""}</li>`;
   }).join("")}</ol></details>`;
   if (r.refused) return `${head}<div class="refused">${icon("info")}<div>${esc(r.message)}</div></div>${trace}`;
+  if (r.pending_review) return `${head}<div class="pending"><span class="spinner"></span><div><b>${esc(r.message)}</b>
+      <div class="chips" style="margin-top:6px">${(r.topics || []).map((t) => `<span class="chip warn">${esc(t)}</span>`).join("")}</div>
+      <div class="muted small">Mã bản nháp #${r.draft_id} · trang này tự cập nhật khi có kết quả duyệt</div></div></div>${trace}`;
   const claims = `<ol class="claims">${r.claims.map((c) => `<li>${esc(c.text)}${c.refs.map((n) => `<button class="ref" data-n="${n}" aria-label="Xem trích dẫn ${n}">${n}</button>`).join("")}
     ${(c.ocr_doubt || []).length ? `<span class="chip warn" title="Bộ đọc OCR thứ hai không đọc ra đúng con số này — hãy đối chiếu ảnh gốc bên dưới">số từ bản scan chưa xác nhận: ${esc(c.ocr_doubt.join(", "))}</span>`
       : c.uncertain ? `<span class="chip warn" title="Điểm NLI thấp">chưa chắc</span>` : ""}</li>`).join("")}</ol>`;
@@ -419,6 +443,13 @@ function renderAnswer(r, i) {
 }
 
 function wireAnswer(el, i) {
+  $$("[data-fb]", el).forEach((b) => b.onclick = async () => {
+    const m = CHAT[i]; if (!m || !m.r || m.fb) return;
+    const note = b.dataset.fb === "down" ? (prompt("Câu trả lời sai ở đâu? (không bắt buộc)") || "") : "";
+    try { await post("/api/feedback", { audit_seq: m.r.audit_seq, rating: b.dataset.fb, note }); m.fb = b.dataset.fb;
+      $$("[data-fb]", el).forEach((x) => x.classList.toggle("on", x.dataset.fb === m.fb)); toast("Cảm ơn phản hồi của bạn"); }
+    catch (e) { toast(e.message, "bad"); }
+  });
   $$("[data-copy]", el).forEach((b) => b.onclick = async () => {
     try { await navigator.clipboard.writeText(b.dataset.copy); toast("Đã sao chép link public"); }
     catch { toast("Không sao chép được, hãy bấm chuột phải vào link", "bad"); }
@@ -441,9 +472,123 @@ async function ask(q) {
   const timer = setInterval(() => { if (m.step < THINK.length - 1) { m.step++; const el = $("#ans-" + (CHAT.length - 1)); if (el && !m.r) el.innerHTML = renderThinking(m.step); } }, 2600);
   try {
     m.r = await post("/api/chat", { question: q, scope_site: $("#scope-site")?.value || null });
+    if (m.r.pending_review) watchDrafts();
   } catch (e) {
     m.r = { refused: true, message: "Lỗi: " + e.message, trace: [] };
   } finally { clearInterval(timer); renderThread(); }
+}
+
+// ------------------------------------------------------------------ sensitive-question drafts (asker)
+let DRAFT_TIMER = null;
+function draftToAnswer(d) {
+  if (d.status === "approved") return { ...d.answer, approved: true, edited: d.edited };
+  if (d.status === "rejected") return { refused: true, trace: [], message: "Ban IPO không phát hành câu trả lời cho câu hỏi này."
+    + (d.note ? " Ghi chú: " + d.note : "") };
+  return null;
+}
+function watchDrafts() {
+  if (DRAFT_TIMER) return;
+  DRAFT_TIMER = setInterval(async () => {
+    const waiting = CHAT.filter((m) => m.r && m.r.pending_review);
+    if (!waiting.length || !ME) { clearInterval(DRAFT_TIMER); DRAFT_TIMER = null; return; }
+    let mine; try { mine = await api("/api/my/drafts"); } catch { return; }
+    let changed = false;
+    for (const m of waiting) {
+      const d = mine.find((x) => x.draft_id === m.r.draft_id);
+      const a = d && draftToAnswer(d);
+      if (a) { m.r = a; changed = true; toast("Câu hỏi của bạn đã có kết quả duyệt"); }
+    }
+    if (changed && location.hash.startsWith("#/chat")) renderThread();
+  }, 8000);
+}
+
+async function pageDrafts(page) {
+  page.innerHTML = '<div class="card empty">Đang tải…</div>';
+  const mine = await api("/api/my/drafts");
+  if (!mine.length) { page.innerHTML = '<div class="card empty">Bạn chưa có câu hỏi nào cần duyệt.</div>'; return; }
+  const ST = { pending: ["Đang chờ duyệt", "warn"], approved: ["Đã duyệt", "ok"], rejected: ["Không phát hành", "bad"] };
+  page.innerHTML = mine.map((d, k) => `<div class="card" style="margin-bottom:14px"><div class="card-h">
+      <span class="chip ${ST[d.status][1]}">${ST[d.status][0]}</span><h3 style="flex:1">${esc(d.question)}</h3>
+      <span class="muted small">#${d.draft_id} · ${new Date(d.created_at).toLocaleString()}</span></div>
+      <div class="card-b"><div class="chips">${d.topics.map((t) => `<span class="chip">${esc(t)}</span>`).join("")}</div>
+      ${d.status === "pending" ? '<p class="muted">Ban IPO đang xem xét. Câu trả lời sẽ hiện ở đây sau khi được duyệt.</p>'
+        : `<div class="a-card" id="ans-d${k}">${renderAnswer(draftToAnswer(d), "d" + k)}</div>`}</div></div>`).join("");
+  mine.forEach((d, k) => { const el = $("#ans-d" + k); if (el) wireAnswer(el, "d" + k); });
+}
+
+// ------------------------------------------------------------------ reviewer
+let REVIEW_TAB = "pending";
+async function pageReview(page) {
+  page.innerHTML = `<div class="subtabs" role="tablist">${[["pending", "Chờ duyệt"], ["approved", "Đã duyệt"], ["rejected", "Đã từ chối"]]
+    .map(([k, l]) => `<button role="tab" data-t="${k}" class="${REVIEW_TAB === k ? "active" : ""}">${l}</button>`).join("")}</div>
+    <div id="rq"><div class="card empty">Đang tải…</div></div>`;
+  $$(".subtabs button", page).forEach((b) => b.onclick = () => { REVIEW_TAB = b.dataset.t; pageReview(page); });
+  let q;
+  try { q = await api("/api/review/drafts?status=" + REVIEW_TAB); }
+  catch (e) { $("#rq").innerHTML = `<div class="card empty">${esc(e.message)}</div>`; return; }
+  if (!q.length) { $("#rq").innerHTML = '<div class="card empty">Không có bản nháp nào.</div>'; return; }
+  $("#rq").innerHTML = q.map((d) => `<div class="card review" data-id="${d.draft_id}" style="margin-bottom:16px">
+    <div class="card-h">${avatar(d.asker.name, 28)}<div style="flex:1"><b>${esc(d.asker.name)}</b> <span class="muted small">${esc(d.asker.org)}</span>
+      <div class="small">${esc(d.question)}</div></div>
+      <div class="chips">${d.topics.map((t) => `<span class="chip warn">${esc(t)}</span>`).join("")}${d.lang === "en" ? '<span class="chip info">EN</span>' : ""}</div></div>
+    <div class="card-b">${!d.visible ? `<div class="alert bad">${icon("lock")} ${esc(d.reason)} — bản nháp bị ẩn để không lộ tài liệu ngoài quyền của bạn.</div>`
+      : `<p class="muted small" style="margin-top:0">Mỗi ý có thể sửa lời; xóa trắng một ý để bỏ ý đó. Nguồn trích dẫn không thay đổi.</p>
+      ${d.answer.claims.map((c, n) => `<label class="field">Ý ${n + 1} <span class="muted small">nguồn [${c.refs.join(", ")}]</span>
+        <textarea class="input" rows="2" data-claim="${n}" ${d.status !== "pending" ? "disabled" : ""}>${esc(c.text)}</textarea></label>`).join("")}
+      <details class="trace"><summary>${icon("file")} ${d.answer.citations.length} trích dẫn</summary>${d.answer.citations.map((c) =>
+        `<div class="cite" style="margin-top:8px"><div class="cite-top"><span class="cite-n">${c.n}</span>${ftype((c.name.split(".").pop() || "").toLowerCase())}<span class="cite-name">${esc(c.name)}</span></div>
+        <div class="cite-loc">${esc(c.locator)}</div><blockquote>${esc(c.quote)}</blockquote>
+        ${c.web_url ? `<a href="${esc(c.web_url)}" target="_blank" rel="noopener">Mở file ${icon("ext")}</a>` : ""}</div>`).join("")}</details>
+      ${d.status === "pending" ? `<div class="inline-form"><input class="input" data-note placeholder="Ghi chú cho người hỏi (khi từ chối) hoặc cho nhật ký" style="flex:1;max-width:none">
+        <button class="btn danger" data-act="reject">${icon("x")} Từ chối</button>
+        <button class="btn primary" data-act="approve">${icon("check")} Duyệt & phát hành</button></div>`
+        : `<p class="muted small">${d.status === "approved" ? "Đã duyệt" : "Đã từ chối"} bởi ${esc(d.reviewer || "")}${d.note ? " · " + esc(d.note) : ""}</p>`}`}
+    </div></div>`).join("");
+  $$(".review[data-id]", page).forEach((card) => $$("[data-act]", card).forEach((b) => b.onclick = async () => {
+    const body = { action: b.dataset.act, note: $("[data-note]", card).value || null };
+    if (body.action === "approve") body.claims = $$("[data-claim]", card).map((t) => t.value);
+    try { await post(`/api/review/drafts/${card.dataset.id}`, body); toast(body.action === "approve" ? "Đã duyệt và phát hành" : "Đã từ chối"); pageReview(page); }
+    catch (e) { toast(e.message, "bad"); }
+  }));
+}
+
+// ------------------------------------------------------------------ search
+let SEARCH_Q = "", SEARCH_RES = null;
+function highlight(text, terms) {
+  let out = esc(text);
+  for (const t of terms || []) {
+    if (t.length < 3) continue;
+    out = out.replace(new RegExp(`(${t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "gi"), "<mark>$1</mark>");
+  }
+  return out;
+}
+async function pageSearch(page) {
+  page.innerHTML = `<form class="toolbar" id="sform"><div class="search" style="flex:1;max-width:none">${icon("search")}
+      <input class="input" id="sq" placeholder="Ví dụ: hợp đồng EPC Hàm Kiệm, biên bản nghiệm thu công suất, room ngoại…" value="${esc(SEARCH_Q)}"></div>
+      <button class="btn primary" type="submit">Tìm</button></form><div id="sres"></div>`;
+  const draw = () => {
+    const r = SEARCH_RES;
+    if (!r) { $("#sres").innerHTML = '<div class="card empty">Nhập từ khóa hoặc mô tả nội dung tài liệu — không cần nhớ tên file.</div>'; return; }
+    if (r.refused) { $("#sres").innerHTML = `<div class="card empty">${esc(r.message)}</div>`; return; }
+    if (!r.results.length) { $("#sres").innerHTML = '<div class="card empty">Không tìm thấy tài liệu phù hợp trong phạm vi của bạn.</div>'; return; }
+    $("#sres").innerHTML = `<p class="muted small">${r.results.length} tài liệu trong phạm vi của bạn</p>` + r.results.map((x) => `<div class="card sr">
+      <div class="cite-top">${ftype(x.ext)}<b class="cite-name">${esc(x.name)}</b><span class="chip">${esc(SITE_LABEL[x.site_id] || x.site_id)}</span>
+        ${x.ocr ? '<span class="chip info">bản scan</span>' : ""}</div>
+      <div class="muted small">${esc([x.site_id, x.path].filter(Boolean).join(" › "))} · ${esc(x.locator)}</div>
+      <p class="snip">${highlight(x.snippet, r.terms)}</p>
+      <div class="cite-foot">${x.web_url ? `<a href="${esc(x.web_url)}" target="_blank" rel="noopener">${icon("file")} Mở file ${icon("ext")}</a>` : ""}
+        ${x.public ? `<a href="${esc(x.public.url)}" target="_blank" rel="noopener">${icon("globe")} Link public thư mục ${esc(x.public.folder)}</a>` : ""}
+        <span style="flex:1"></span><button class="btn sm" data-askabout="${esc(x.name)}">${icon("chat")} Hỏi về tài liệu này</button></div></div>`).join("");
+    $$("[data-askabout]").forEach((b) => b.onclick = () => { location.hash = "#/chat"; setTimeout(() => { const q = $("#q"); if (q) { q.value = `Tài liệu ${b.dataset.askabout} nói gì về `; q.focus(); } }, 50); });
+  };
+  $("#sform").onsubmit = async (e) => {
+    e.preventDefault(); SEARCH_Q = $("#sq").value.trim(); if (!SEARCH_Q) return;
+    $("#sres").innerHTML = '<div class="card empty"><span class="spinner"></span> Đang tìm…</div>';
+    try { SEARCH_RES = await api("/api/search?q=" + encodeURIComponent(SEARCH_Q)); } catch (ex) { SEARCH_RES = { refused: true, message: ex.message }; }
+    draw();
+  };
+  draw();
+  $("#sq").focus();
 }
 
 // ------------------------------------------------------------------ scope

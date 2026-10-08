@@ -251,3 +251,15 @@ pre.payload { margin: 0; font-family: var(--mono); font-size: 11px; white-space:
 .cite-public { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 6px; padding-top: 6px;
   border-top: 1px dashed var(--line); font-size: 12px; }
 .cite-public .muted { overflow-wrap: anywhere; }
+
+/* BRD v1.4: pending review, feedback, reviewer, search */
+.pending { display: flex; gap: 12px; align-items: flex-start; padding: 14px; border-radius: 10px;
+  background: var(--warn-bg, #fffaeb); border: 1px solid var(--warn-line, #fedf89); margin: 8px 0; }
+.a-head .fb { display: inline-flex; gap: 2px; }
+.a-head .fb .btn.on { background: var(--brand-bg, #e6f4f1); }
+.review textarea.input { min-height: 54px; resize: vertical; font: inherit; }
+.sr { padding: 14px 16px; margin-bottom: 10px; }
+.sr .snip { margin: 8px 0; line-height: 1.55; color: var(--ink-2); }
+.sr mark { background: #fff3a3; color: inherit; padding: 0 1px; border-radius: 2px; }
+[data-theme="dark"] .sr mark { background: #6b5a00; }
+[data-theme="dark"] .pending { background: #2b2410; border-color: #5c4a12; }
