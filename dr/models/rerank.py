@@ -4,6 +4,7 @@ from __future__ import annotations
 import threading
 
 from dr.config import settings
+from dr.models.memo import lru
 
 _model = None
 _lock = threading.Lock()
@@ -23,6 +24,7 @@ def get():
     return _model
 
 
+@lru(2048)
 def rerank(query: str, passages: list[str]) -> list[float]:
     if not passages:
         return []

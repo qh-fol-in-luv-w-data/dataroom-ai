@@ -2,6 +2,8 @@
 and a "SharePoint viewer" endpoint that serves originals only if SharePoint allows it."""
 from __future__ import annotations
 
+import asyncio
+import contextvars
 import io
 import json
 import logging
@@ -14,7 +16,7 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -86,6 +88,8 @@ def _warm_models():
         S.deps.rerank("khởi động", ["khởi động"])
         S.deps.nli("khởi động", "khởi động")
         S.deps.embed_query("khởi động")
+        from dr.models import llm
+        llm.warm()                 # load the LLM now and keep it resident
         S.models_ready = True
     except Exception:
         log.exception("model warm-up failed")
@@ -241,8 +245,7 @@ class ChatIn(BaseModel):
     scope_site: str | None = None
 
 
-@app.post("/api/chat")
-async def chat(body: ChatIn, claims: dict = Depends(current)):
+def _chat_precheck(claims: dict) -> None:
     if claims.get("admin"):
         raise HTTPException(400, "Hãy chọn một danh tính người dùng để hỏi")
     if S.deps is None:
@@ -251,6 +254,48 @@ async def chat(body: ChatIn, claims: dict = Depends(current)):
     if wait:
         audit.append(claims["oid"], "rate_limited", {"retry_after": round(wait)})
         raise HTTPException(429, RATE_MESSAGE.format(seconds=int(wait) + 1), headers={"Retry-After": str(int(wait) + 1)})
+
+
+@app.post("/api/chat/stream")
+async def chat_stream(body: ChatIn, claims: dict = Depends(current)):
+    """Same answer as /api/chat, with live progress: one JSON line per finished step, then the
+    result line. Progress lines carry step names and timings only; the answer is released in
+    one block after verification and the final permission re-check, as in /api/chat."""
+    _chat_precheck(claims)
+    loop = asyncio.get_running_loop()
+    events: asyncio.Queue = asyncio.Queue()
+    emit = lambda ev: loop.call_soon_threadsafe(events.put_nowait, ev)
+
+    def run():
+        try:
+            if not ratelimit.limiter.slots.acquire(blocking=False):
+                emit({"stage": "queue"})
+                ratelimit.limiter.slots.acquire()
+            try:
+                r = answer_mod.ask(S.tenant, S.index, claims["oid"], claims["roles"], body.question, S.deps,
+                                   body.scope_site, on_step=emit)
+            finally:
+                ratelimit.limiter.slots.release()
+            emit({"result": r})
+        except Exception:
+            log.exception("chat stream failed")
+            emit({"error": "Hệ thống gặp lỗi khi xử lý câu hỏi, vui lòng thử lại."})
+
+    threading.Thread(target=contextvars.copy_context().run, args=(run,), daemon=True).start()
+
+    async def lines():
+        while True:
+            ev = await events.get()
+            yield json.dumps(ev, ensure_ascii=False, default=str) + "\n"
+            if "result" in ev or "error" in ev:
+                return
+    return StreamingResponse(lines(), media_type="application/x-ndjson",
+                             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+
+
+@app.post("/api/chat")
+async def chat(body: ChatIn, claims: dict = Depends(current)):
+    _chat_precheck(claims)
 
     def run():
         with ratelimit.limiter.slots:     # bounded concurrent LLM work across all users

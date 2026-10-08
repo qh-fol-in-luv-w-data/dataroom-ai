@@ -245,6 +245,37 @@ Cần quản trị tenant chuẩn bị (kế hoạch §2.1):
 
 Đã kiểm bằng một Graph giả lập ở tầng HTTP (`tests/test_m365.py`). **Chưa chạy trên tenant thật**: phải có thông tin tenant mới chạy được.
 
+## Tốc độ trả lời
+
+Đo trên MacBook M3 Pro 18 GB, model qwen2.5:7b chạy bằng Ollama. Máy này đọc tài liệu đầu vào khoảng 330 token/giây
+và sinh chữ khoảng 27 token/giây. Phần LLM đọc tài liệu là phần chậm nhất.
+
+| | Trước | Sau |
+|---|---|---|
+| Câu hỏi mới | 13–22 s | 6–10 s |
+| Câu hỏi lặp lại (cùng phạm vi quyền) | 13–22 s | 0,1–0,3 s |
+| Câu đầu tiên sau 5 phút nghỉ | ~40 s (nạp lại model) | như câu thường (model giữ trong bộ nhớ 24 h) |
+| Câu nhạy cảm, câu bị chặn | < 0,3 s | < 0,3 s |
+
+Các thay đổi:
+- **5 đoạn văn thay vì 10** (`DR_MAX_PASSAGES`). Trên bộ câu hỏi chuẩn, đáp án luôn nằm trong 5 đoạn đầu sau rerank.
+- **Chỉ gửi những câu liên quan** (`DR_MAX_SENTENCES=14`). Reranker chấm điểm từng câu trong 5 đoạn văn và chỉ giữ
+  14 câu cao nhất, nên phần đầu vào LLM giảm từ khoảng 2.000 xuống còn khoảng 1.000 token.
+- **Trích dẫn bằng mã câu.** Mỗi câu trong tài liệu được gắn mã `[D2.3]`, model ghi mã thay vì chép lại câu trích.
+  Câu trích hiển thị chính là câu gốc nên luôn đúng nguyên văn, và model sinh ít token hơn. Quy tắc mọi con số trong
+  ý trả lời phải có trong câu được dẫn vẫn giữ nguyên. Ở chế độ tra cứu, model chỉ chọn mã câu.
+- **Nhớ kết quả theo đúng đầu vào** (LLM, rerank, NLI, embedding). Khóa nhớ gồm câu hỏi và chính các đoạn văn người
+  hỏi được phép xem, đã qua kiểm tra trực tiếp. Quyền hoặc phiên bản file thay đổi thì đầu vào đổi theo, nên không
+  bao giờ dùng lại đáp án của phạm vi khác. Các cổng quyền và nhật ký vẫn chạy cho mỗi câu hỏi.
+- **Model luôn sẵn sàng.** Server nạp sẵn model khi khởi động, Ollama giữ model 24 h (`DR_LLM_KEEP_ALIVE`).
+- **Tiến trình thật** qua `POST /api/chat/stream` (NDJSON): bước nào xong hiện ngay bước đó kèm thời gian.
+  Dòng tiến trình chỉ có tên bước, không chứa nội dung. Câu trả lời vẫn hiện một lần sau khi đã kiểm chứng và kiểm
+  tra quyền lần cuối.
+
+Chất lượng sau khi tăng tốc: QA 9/11 (B-fx là lỗi đã biết; C-price là câu nhạy cảm nên chuyển liên hệ), không rò rỉ 8/8.
+Hỏi chéo nhóm: 54/54 không rò rỉ, 30/30 câu nhạy cảm chuyển liên hệ, đối chứng 3/3. Đã thử qwen2.5:3b: chỉ đúng 8/11
+và hay trả về mỗi mã câu, nên giữ 7B. Muốn câu mới dưới 2 giây cần máy chủ GPU (prefill vài nghìn token/giây).
+
 ## Giới hạn so với production
 
 - SharePoint và Entra là bản giả lập. Connector được viết để sau này thay bằng Graph thật (delta, `/permissions`, OBO).

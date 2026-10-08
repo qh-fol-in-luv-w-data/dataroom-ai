@@ -24,8 +24,7 @@ from dr.tenant.service import FakeTenant
 
 NO_ROLE_MESSAGE = "Tài khoản của bạn chưa được cấp quyền sử dụng trợ lý AI trong Data Room."
 MAX_CHUNKS_PER_FILE = 3
-MAX_PASSAGES = 10
-FOCUSED_PASSAGES = 5   # retry size when a small local model finds nothing in 10 passages
+FOCUSED_PASSAGES = 5   # retry size when a small local model finds nothing in a longer passage list
 
 
 @dataclass
@@ -35,22 +34,38 @@ class Deps:
     llm: Callable | None = None
     nli: Callable | None = None
     embed_many: Callable | None = None     # batch embeddings (input guard scores parts of long questions)
+    llm_quotes: Callable | None = None     # quote mode: model picks sentence ids, quotes are the sentences
 
     @classmethod
     def real(cls) -> "Deps":
         from dr.models import embed, llm, nli, rerank
-        return cls(embed.embed_query, rerank.rerank, llm.answer_json, nli.entail, embed_many=embed.embed_texts)
+        return cls(embed.embed_query, rerank.rerank, llm.answer_json, nli.entail, embed_many=embed.embed_texts,
+                   llm_quotes=llm.answer_quotes)
 
 
 @dataclass
 class Trace:
     steps: list[dict] = field(default_factory=list)
     _t: float = field(default_factory=time.time)
+    on_step: Callable | None = None        # progress callback (streamed to the UI); never sees answer content
 
     def add(self, step: str, ok: bool, **detail):
         now = time.time()
         self.steps.append({"step": step, "ok": ok, "ms": int((now - self._t) * 1000), **detail})
         self._t = now
+        if self.on_step:
+            try:
+                self.on_step({"step": step, "ok": ok, "ms": self.steps[-1]["ms"]})
+            except Exception:
+                pass
+
+    def stage(self, name: str):
+        """Announce the stage that is about to run (progress only, not part of the trace)."""
+        if self.on_step:
+            try:
+                self.on_step({"stage": name})
+            except Exception:
+                pass
 
 
 _MARKER = re.compile(r"mã kiểm soát:?\s*ks-[a-z]+-\d{4}", re.IGNORECASE)
@@ -81,6 +96,29 @@ def select_passages(order: list[int], passages: dict[int, dict], chosen: set[str
         selected.append(c)
         per_file[it] = per_file.get(it, 0) + 1
     return selected
+
+
+def focus_sentences(question: str, llm_in: list[dict], deps: Deps, trace: Trace) -> list[dict]:
+    """Keep only the settings.max_sentences sentences the reranker scores highest (in their
+    original order). The kept text is a subset of each passage, so quotes still verify against
+    the full passage; passages left with no sentence are not sent."""
+    from dr.models.llm import split_sentences
+    n = settings.max_sentences
+    if not n or not deps.rerank:
+        return llm_in
+    sents = [(i, j, s) for i, p in enumerate(llm_in) for j, s in enumerate(split_sentences(p["text"]))]
+    if len(sents) <= n:
+        return llm_in
+    scores = deps.rerank(question, [s for _, _, s in sents])
+    keep = {(i, j) for (i, j, _), _ in sorted(zip(sents, scores), key=lambda x: -x[1])[:n]}
+    out = []
+    for i, p in enumerate(llm_in):
+        kept = [s for (pi, j, s) in sents if pi == i and (pi, j) in keep]
+        if kept:
+            out.append({**p, "text": "\n".join(kept)})
+    trace.add("Chọn câu liên quan trong các đoạn (rerank theo câu)", True, sentences=f"{n}/{len(sents)}",
+              passages=len(out))
+    return out
 
 
 def _refuse(oid, question, message, trace, kind="refusal", extra=None) -> dict:
@@ -123,8 +161,8 @@ def crop_for(page_ref: str | None, quote: str) -> dict | None:
 
 
 def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], question: str,
-        deps: Deps, scope_site: str | None = None) -> dict:
-    trace = Trace()
+        deps: Deps, scope_site: str | None = None, on_step: Callable | None = None) -> dict:
+    trace = Trace(on_step=on_step)
     question = question.strip()[:1000]
     lang = lang_mod.detect(question)
 
@@ -180,6 +218,7 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
         if kinds:
             trace.add("Che thông tin cá nhân trong câu hỏi", True, kinds=kinds)
             question = masked_q
+    trace.stage("search")
     if getattr(index, "in_db", False):
         hits, info = index.search_as(oid, question, qvec, k=settings.rerank_top, site=scope_site)
         trace.add("Tìm kiếm lai BM25 + vector trong Postgres (RLS ngay trong câu truy vấn)", True,
@@ -210,6 +249,7 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
             files.append(it)
 
     # ---- gate 2: live check, silent drop, backfill up to max_files
+    trace.stage("live")
     chosen: list[str] = []
     dropped_live: dict[str, str] = {}
     transient = False
@@ -231,7 +271,7 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
     if transient and files and files[0] in dropped_live:
         return refuse(RETRY_MESSAGE)
 
-    selected = select_passages(order, passages, set(chosen), MAX_PASSAGES, MAX_CHUNKS_PER_FILE)
+    selected = select_passages(order, passages, set(chosen), settings.max_passages, MAX_CHUNKS_PER_FILE)
     if not selected:
         return refuse(NEUTRAL_REFUSAL)
     sel_passages = {c: passages[c] for c in selected}
@@ -240,10 +280,16 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
         trace.add("Đoạn bị gắn cờ prompt injection (vẫn bọc là dữ liệu)", True, chunks=len(flagged))
 
     # ---- LLM
+    # Quote mode (no summarize role, BR-04) only shows verbatim quotes: the model just picks sentence ids.
+    quote_only = not ({"Investor.AI.Summarize", "Staff.AI"} & set(g.detail.get("roles_mirror", [])))
+    llm_call = deps.llm_quotes if quote_only and deps.llm_quotes else deps.llm
     llm_in = [{"chunk_id": c, "text": passages[c]["text"],
                "source": f'{passages[c]["name"]} · {passages[c]["locator"]}'} for c in selected]
-    raw, labels = deps.llm(question, llm_in, lang=lang)
-    trace.add(f"LLM {settings.llm_model} (JSON có ràng buộc)", True, raw_claims=len(raw.get("claims", [])))
+    llm_in = focus_sentences(question, llm_in, deps, trace)
+    trace.stage("llm")
+    raw, labels = llm_call(question, llm_in, lang=lang)
+    trace.add(f"LLM {settings.llm_model} ({'chọn câu nguyên văn theo mã' if llm_call is deps.llm_quotes else 'JSON có ràng buộc'})",
+              True, raw_claims=len(raw.get("claims", [])), passages=len(llm_in))
 
     # ---- deterministic verification
     kept, dropped = verify.check(raw.get("claims", []), labels, sel_passages, question)
@@ -252,13 +298,14 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
     if not kept and len(selected) > FOCUSED_PASSAGES:
         # Small local models lose facts in long contexts: retry once on the top passages only.
         focus = llm_in[:FOCUSED_PASSAGES]
-        raw, labels = deps.llm(question, focus, lang=lang)
+        raw, labels = llm_call(question, focus, lang=lang)
         kept, dropped2 = verify.check(raw.get("claims", []), labels,
                                       {p["chunk_id"]: sel_passages[p["chunk_id"]] for p in focus}, question)
         dropped += dropped2
         trace.add(f"Thử lại có trọng tâm ({FOCUSED_PASSAGES} đoạn đầu) + kiểm chứng", True, kept=len(kept),
                   dropped_reasons=[r for _, r in dropped2])
     if deps.nli:
+        trace.stage("verify")
         for cl in kept:
             cl.nli = round(deps.nli(" ".join(c.quote for c in cl.citations), cl.text), 3)
         trace.add("NLI mDeBERTa (tín hiệu phụ)", True, scores=[cl.nli for cl in kept])
