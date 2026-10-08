@@ -91,3 +91,12 @@ def test_feedback_only_on_own_answers(client):
     r = client.post("/api/chat", headers=ha, json={"question": "phí thu xếp nhóm A"}).json()
     assert client.post("/api/feedback", headers=ha, json={"audit_seq": r["audit_seq"], "rating": "up"}).json()["ok"]
     assert client.post("/api/feedback", headers=hb, json={"audit_seq": r["audit_seq"], "rating": "down"}).status_code == 404
+
+
+def test_sensitive_topics_cover_english_wording():
+    from dr.core import review
+    for q in ["How much is the provision for the contractor dispute?", "Is there any arbitration?",
+              "What is the company worth?", "Dự phòng tranh chấp với nhà thầu là bao nhiêu?"]:
+        assert review.topics_of(q), q
+    for q in ["What was the net revenue in 2025?", "Tổng công suất lắp đặt là bao nhiêu MW?"]:
+        assert not review.topics_of(q), q
