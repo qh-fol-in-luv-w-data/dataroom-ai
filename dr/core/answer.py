@@ -164,6 +164,17 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
         question = clean_q
     else:
         qvec = deps.embed_query(question) if deps.embed_query else None
+    # ---- sensitive topics (BRD BR-08): not answered by the AI; the asker is pointed to a person
+    topics = review.topics_of(question)
+    is_staff = "Staff.AI" in set(g.detail.get("roles_mirror", []))
+    if topics and not is_staff and settings.sensitive_mode == "contact":
+        msg = (f"Nội dung này hơi nhạy cảm, bạn hãy liên hệ trực tiếp {settings.sensitive_contact} để được hỗ trợ."
+               if lang == "vi" else
+               f"This topic is sensitive. Please contact {settings.sensitive_contact_en} directly for assistance.")
+        trace.add("Câu hỏi nhạy cảm → không trả lời, chuyển người liên hệ", True, topics=topics)
+        r = refuse(msg, kind="sensitive_redirect", extra={"topics": topics})
+        r["sensitive"] = True
+        return r
     if settings.mask_pii:
         masked_q, kinds = pii.mask(question)
         if kinds:
@@ -330,8 +341,7 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
     result = {"refused": False, "message": None, "claims": claims_out, "citations": cites, "trace": trace.steps,
               "audit_seq": seq, "lang": lang, "mode": "summary" if summarize else "quote"}
     # ---- sensitive questions (BR-08): investors get the answer only after a reviewer approves it
-    topics = review.topics_of(question)
-    if topics and "Staff.AI" not in held_roles:
+    if topics and not is_staff and settings.sensitive_mode == "review":
         trace.add("Câu hỏi nhạy cảm → bản nháp chờ người duyệt", True, topics=topics)
         return review.hold(oid, question, lang, topics, result, lang_mod.tr(review.HOLD_MESSAGE, lang))
     return result
