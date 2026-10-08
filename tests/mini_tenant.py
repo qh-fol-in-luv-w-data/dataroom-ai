@@ -51,12 +51,14 @@ def make_tenant(root: Path) -> Path:
             {"oid": "inv-ab", "name": "Hai nhóm", "type": "guest", "roles": ["Investor.AI"]},
             {"oid": "inv-noai", "name": "Không AI", "type": "guest", "roles": []},
             {"oid": "staff-1", "name": "Nhân viên", "type": "member", "roles": ["Staff.AI"]},
+            {"oid": "rev-1", "name": "Người duyệt", "type": "member", "roles": ["Staff.AI", "Reviewer"]},
+            {"oid": "rev-x", "name": "Người duyệt không quyền", "type": "member", "roles": ["Reviewer"]},
         ],
         "groups": [
             {"id": "DR-INV-A", "members": ["inv-a1", "inv-ab", "inv-noai"]},
             {"id": "DR-INV-B", "members": ["inv-b1", "inv-ab"]},
             {"id": "DR-INV-C", "members": ["inv-c1"]},
-            {"id": "STAFF", "members": ["staff-1"]},
+            {"id": "STAFF", "members": ["staff-1", "rev-1"]},
         ],
         "sites": [
             {"id": "COMMON", "name": "Chung", "groups": ["DR-INV-A", "DR-INV-B", "DR-INV-C", "STAFF"], "rac": True},

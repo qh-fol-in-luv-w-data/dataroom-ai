@@ -259,6 +259,83 @@ async def chat(body: ChatIn, claims: dict = Depends(current)):
     return await run_in_threadpool(run)
 
 
+# ------------------------------------------------------------------ search, review, feedback (BRD v1.4)
+@app.get("/api/search")
+async def search(q: str = Query(..., max_length=300), site: str | None = None, claims: dict = Depends(current)):
+    if claims.get("admin"):
+        raise HTTPException(400, "Hãy chọn một danh tính người dùng để tìm")
+    wait = ratelimit.limiter.check(claims["oid"])
+    if wait:
+        raise HTTPException(429, RATE_MESSAGE.format(seconds=int(wait) + 1), headers={"Retry-After": str(int(wait) + 1)})
+    from dr.core.search import search_files
+    return await run_in_threadpool(search_files, S.tenant, S.index, claims["oid"], claims["roles"], q, S.deps, site)
+
+
+@app.get("/api/my/drafts")
+def my_drafts(claims: dict = Depends(current)):
+    from dr.core import review
+    return review.my_drafts(S.tenant, claims["oid"])
+
+
+def reviewer_only(claims: dict = Depends(current)) -> dict:
+    """Reviewer app role in the token AND in the mirror, account not denied (like gate 4)."""
+    if "Reviewer" not in claims.get("roles", []):
+        raise HTTPException(403, "Chỉ người duyệt (Reviewer)")
+    with pg.as_principal(claims["oid"]) as cur:
+        ok = cur.execute("SELECT me_has_role('Reviewer') AND NOT me_denied()").fetchone()[0]
+    if not ok:
+        raise HTTPException(403, "Vai trò Reviewer đã bị thu hồi hoặc tài khoản bị chặn")
+    return claims
+
+
+@app.get("/api/review/drafts")
+def review_queue(status: str = "pending", claims: dict = Depends(reviewer_only)):
+    from dr.core import review
+    if status not in ("pending", "approved", "rejected"):
+        raise HTTPException(400, "status không hợp lệ")
+    return review.queue(S.tenant, claims["oid"], status)
+
+
+class DecisionIn(BaseModel):
+    action: str
+    claims: list[str] | None = None
+    note: str | None = None
+
+
+@app.post("/api/review/drafts/{draft_id}")
+def review_decide(draft_id: int, body: DecisionIn, claims: dict = Depends(reviewer_only)):
+    from dr.core import review
+    try:
+        return review.decide(S.tenant, claims["oid"], draft_id, body.action, body.claims, body.note)
+    except PermissionError as e:
+        raise HTTPException(403, str(e))
+    except LookupError as e:
+        raise HTTPException(404, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+class FeedbackIn(BaseModel):
+    audit_seq: int
+    rating: str
+    note: str | None = None
+
+
+@app.post("/api/feedback")
+def feedback(body: FeedbackIn, claims: dict = Depends(current)):
+    """Thumbs up/down on an answer (BRD function 10), kept in the audit chain."""
+    if body.rating not in ("up", "down"):
+        raise HTTPException(400, "rating phải là up hoặc down")
+    with pg.admin() as c:
+        row = c.execute("SELECT oid FROM audit WHERE seq=%s AND kind='answer'", (body.audit_seq,)).fetchone()
+    if not row or row[0] != claims["oid"]:
+        raise HTTPException(404, "Không có câu trả lời này")
+    from dr.security import pii
+    seq = audit.append(claims["oid"], "feedback", {"answer_seq": body.audit_seq, "rating": body.rating,
+                                                   "note": pii.mask((body.note or "")[:500])[0]})
+    return {"ok": True, "audit_seq": seq}
+
+
 # ------------------------------------------------------------------ scope / matrix
 def _item_rows() -> dict[str, dict]:
     with pg.admin() as c:
