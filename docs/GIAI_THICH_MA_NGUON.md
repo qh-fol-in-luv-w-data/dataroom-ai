@@ -2,7 +2,7 @@
 
 Tài liệu này giải thích từng file trong repo `dataroom-ai-demo`: file đó để làm gì, gồm những hàm chính nào, vì sao được thiết kế như vậy, và liên quan tới file nào khác. Nội dung được viết từ chính mã nguồn tại commit `bed70fc` (2026-10-09). Khi code đổi, cần cập nhật lại.
 
-Cách đọc nhanh: đọc mục 1 và 2 để nắm bức tranh chung, rồi tra từng file ở các mục sau.
+Cách đọc nhanh: đọc mục 1 và 2 để nắm bức tranh chung, rồi tra từng file ở các mục 4–7. Mục 8 giải thích từng thư viện và thành phần bên ngoài (phiên bản, dùng để làm gì, ở file nào).
 
 ## 1. Bức tranh chung
 
@@ -65,6 +65,7 @@ Các khối chính:
 - `scripts/`: công cụ dòng lệnh.
 - `tests/`: kiểm thử tự động.
 - `docs/`: kế hoạch tổng thể, BRD, bản thiết kế.
+- Thư viện và dịch vụ bên ngoài: xem mục 8.
 
 
 ## 4. Lõi trả lời, model và bảo mật (`dr/core`, `dr/models`, `dr/security`, cấu hình)
@@ -1923,3 +1924,115 @@ Kiểm tra `scripts/gen_attack_set.py`.
 - `test_generate`: số lượng mỗi nhãn nằm trong khoảng mong đợi; không có câu nào xuất hiện ở cả hai tập; tập kiểm tra có đủ 8 loại tấn công; mã câu không trùng; ngôn ngữ và kiểu làm rối thuộc danh mục cho phép; câu bẫy chiếm ít nhất 40% câu hợp lệ.
 - `test_deterministic`: cùng seed cho cùng file.
 - `test_norm`: hàm chuẩn hóa xử lý chữ toàn khổ, ký tự vô hình và khoảng trắng.
+
+## 8. Thư viện và thành phần bên ngoài
+
+Phiên bản ghi dưới đây là bản **đang cài trong `.venv`** tại thời điểm viết (2026-10-09), đọc bằng `importlib.metadata`. `pyproject.toml` chỉ đặt mức tối thiểu (`>=`), nên cài lại có thể ra phiên bản khác.
+
+Có hai cách cài:
+- `make setup` cài các thư viện trong `pyproject.toml`, rồi cài thêm `paddlex[ocr,genai-client]==3.7.2` và `mlx-vlm`. Hai gói này không nằm trong `pyproject.toml`.
+- Các model AI và dịch vụ nền (Postgres, Ollama) cài riêng, xem mục 8.1.
+
+### 8.1. Dịch vụ và model chạy ngoài Python
+
+| Thành phần | Phiên bản / tên | Dùng để làm gì | Gọi từ đâu |
+|---|---|---|---|
+| PostgreSQL | 15.17 (Homebrew, cụm riêng trong `pgdata/`, cổng 55432) | Lưu tài liệu đã tách đoạn, bản chép quyền, RLS, nhật ký chuỗi hash, tìm kiếm | `dr/db/pg.py`, `dr/db/schema.sql` |
+| pgvector (extension Postgres) | 0.8.7, tự build bằng `make pgvector` | Kiểu `halfvec(1024)` và chỉ mục HNSW cho tìm kiếm ngữ nghĩa ngay trong Postgres, chạy dưới RLS | `schema.sql`, `dr/core/pgindex.py` |
+| Ollama | 0.40.2, chạy dịch vụ tại `127.0.0.1:11434` | Máy chủ chạy LLM và model embedding trên GPU Apple | `dr/models/llm.py`, `dr/models/embed.py` |
+| qwen2.5:7b (qua Ollama) | 7,6 tỷ tham số, lượng tử hóa Q4_K_M, khoảng 4,7 GB | Đọc đoạn văn và viết câu trả lời dạng JSON có ràng buộc; chọn câu nguyên văn theo mã | `dr/models/llm.py` |
+| bge-m3 (qua Ollama) | 1024 chiều, khoảng 1,2 GB | Vector cho câu hỏi và đoạn văn (đa ngôn ngữ, có tiếng Việt); cũng là đầu vào của bộ phân loại chặn tấn công | `dr/models/embed.py`, `dr/security/guard.py`, `scripts/train_guard.py` |
+| BAAI/bge-reranker-v2-m3 | tải từ Hugging Face lần đầu chạy | Xếp hạng lại đoạn văn và câu theo mức liên quan; kiểm tra câu trả lời đúng trọng tâm | `dr/models/rerank.py` |
+| MoritzLaurer/mDeBERTa-v3-base-xnli-multilingual-nli-2mil7 | tải từ Hugging Face | Chấm "câu trích có hàm ý ý trả lời không" (NLI), tín hiệu phụ để gắn nhãn "chưa chắc" | `dr/models/nli.py` |
+| PaddleOCR-VL-1.6 | model trong `~/.paddlex/official_models/PaddleOCR-VL-1.6`, chạy bằng `mlx_vlm.server` ở cổng 8111 (`make ocr-server`) | Đọc chữ từ bản scan và ảnh (OCR bằng model thị giác–ngôn ngữ) | `dr/ingest/ocr.py` |
+| PP-OCRv5 (latin) | model của PaddleOCR | Bộ đọc thứ hai để đối chiếu con số trong bản scan, và để nhận biết hướng xoay trang | `dr/ingest/ocr.py`, `dr/ingest/preprocess.py` |
+| MSAL.js (`@azure/msal-browser`) | 3.28.1, tải từ jsDelivr CDN, **chỉ ở chế độ Microsoft 365** | Đăng nhập Entra ID (SSO) trên trình duyệt và lấy token gọi API | `web/app.js` (`initAuth`, `msalToken`) |
+| Microsoft Graph / SharePoint | API của Microsoft 365 | Đọc thay đổi file và quyền (delta), kiểm tra trực tiếp bằng tài khoản người dùng (on-behalf-of), tải file | `dr/m365/*`, `scripts/sp_upload.py`, `scripts/m365_probe.py` |
+
+Giấy phép của các model: theo công bố của nhà phát triển, qwen2.5-7B dùng Apache-2.0, bge-m3 dùng MIT, bge-reranker-v2-m3 dùng Apache-2.0, mDeBERTa-xnli dùng MIT, PaddleOCR-VL dùng Apache-2.0. Thông tin này chưa được pháp chế xác nhận; cần kiểm tra lại trước khi đưa vào sử dụng chính thức.
+
+### 8.2. Thư viện Python
+
+**Web và API**
+- **`fastapi` 0.142.2:** khung viết API. Định nghĩa các endpoint, phụ thuộc xác thực (`Depends(current)`), mã lỗi HTTP, trả NDJSON cho dòng tiến trình (`StreamingResponse`), trả file (`FileResponse`). Dùng ở `dr/gateway/app.py`, `dr/gateway/admin.py`; test gọi qua `TestClient` trong `tests/test_api.py`.
+- **`starlette` 1.7.0:** nền của FastAPI. Code dùng trực tiếp `run_in_threadpool` để chạy phần trả lời (chặn, nặng) ngoài vòng lặp sự kiện.
+- **`pydantic` 2.13.5:** kiểm tra kiểu dữ liệu đầu vào và đầu ra của API (`ChatIn`, `FileLink`, các body ở trang quản trị).
+- **`uvicorn` 0.54.0:** máy chủ ASGI chạy ứng dụng (`make run`: `python -m uvicorn dr.gateway.app:app`).
+- **`httpx` 0.28.1:** gọi HTTP ra ngoài: Ollama (LLM, embedding), máy chủ OCR, Microsoft Graph, endpoint đăng nhập Entra. Có giới hạn thời gian (timeout) cho từng lời gọi.
+
+**Cơ sở dữ liệu**
+- **`psycopg` 3.3.6 (`psycopg-binary`):** driver Postgres.
+  - `pg.admin()` mở kết nối quản trị (`dr_admin`).
+  - `pg.as_principal(oid)` mở kết nối bằng vai trò `app_query` và đặt biến phiên `app.principal_oid`, để RLS lọc đúng người hỏi.
+  - `Jsonb` dùng để ghi trường JSON (bản nháp duyệt, nhật ký).
+  - Dùng ở `dr/db/pg.py`, `dr/audit.py`, `dr/connector/sync.py`, `dr/core/review.py`.
+
+**Xử lý văn bản và số**
+- **`numpy` 2.2.6:** vector embedding (chuẩn hóa, tích vô hướng), điểm BM25 trong chỉ mục bộ nhớ, ma trận ảnh khi tiền xử lý bản scan, bộ phân loại chặn tấn công (`guard.py` tính điểm logistic bằng numpy).
+- **`Unidecode` 1.4.0:** bỏ dấu tiếng Việt ("Định giá" → "dinh gia"), để so khớp từ khóa không phụ thuộc người gõ có dấu hay không. Dùng ở:
+  - chủ đề nhạy cảm (`review.py`);
+  - nhận diện nhóm (`audience.py`);
+  - phân loại câu hỏi (`intent.py`);
+  - nhận diện ngôn ngữ (`lang.py`);
+  - tách từ BM25 (`index.py`, `chunker.py`);
+  - luật chặn tấn công (`guard.py`).
+
+**Đọc tài liệu (nạp dữ liệu)**
+- **`python-docx` 1.2.0:** đọc Word (`.docx`): đoạn văn, tiêu đề, bảng, để tách đoạn có vị trí ("Điều 5…"). Script `gen_corpus.py` dùng để sinh tài liệu mẫu.
+- **`openpyxl` 3.1.5:** đọc Excel (`.xlsx`), kể cả sheet ẩn; vị trí trích dẫn ghi dạng `Sheet!A1:F13`.
+- **`python-pptx` 1.0.2:** đọc PowerPoint (`.pptx`) theo từng slide.
+- **`beautifulsoup4` 4.15.0:** đọc HTML (`parsers.py`) và đọc bảng HTML mà model OCR trả về (`ocr.py`).
+- **`lxml` 6.1.3:** bộ phân tích XML/HTML nhanh. `scripts/make_brd.py` dùng để sửa trực tiếp nội dung XML của file Word mẫu (giữ nguyên định dạng gốc).
+- **`pypdfium2` 5.14.0:** mở PDF, lấy lớp chữ có sẵn, và vẽ trang thành ảnh để OCR khi PDF là bản scan.
+- **`pypdf` 6.19.0:** phát hiện PDF bị mã hóa ở bước kiểm tra an toàn (`safety.py`); sinh PDF có mật khẩu cho dữ liệu mẫu và test.
+- **`pillow` (PIL) 12.3.0:** xử lý ảnh: mở hoặc lưu ảnh trang, cắt vùng minh chứng cho endpoint `/crop`, chuyển định dạng.
+- **`opencv-python` (cv2), dùng `import cv2`:** tiền xử lý bản scan khó (`preprocess.py`): làm mịn, ngưỡng Otsu, phép hình thái để tìm khung giấy, nắn phẳng ảnh chụp nghiêng, xoay thẳng. `scripts/gen_hard_scans.py` dùng để tạo bản scan khó cho bộ đo OCR.
+- **`paddleocr` 3.7.0, `paddlex` 3.7.2, `paddlepaddle` 3.3.1:** bộ công cụ OCR của Baidu. Code dùng hai việc:
+  - PP-OCRv5 để dò hướng trang và đọc đối chiếu con số;
+  - pipeline PaddleOCR-VL, gửi trang ảnh tới máy chủ `mlx_vlm` để đọc.
+  - Dùng ở `dr/ingest/ocr.py`, `dr/ingest/preprocess.py`.
+- **`mlx` 0.32.3, `mlx-vlm` 0.7.6:** chạy model PaddleOCR-VL trên GPU Apple Silicon. Code Python của dự án không import trực tiếp; chạy như một máy chủ riêng (`make ocr-server`).
+- **`reportlab` 5.0.1:** tạo PDF (bản scan giả có dấu đỏ, bảng biểu) trong `scripts/gen_corpus.py` và test đọc PDF.
+
+**Model AI chạy trong tiến trình Python**
+- **`torch` 2.14.1:** chạy reranker và NLI trên GPU Apple (thiết bị `mps`) nếu có, không có thì chạy CPU.
+- **`sentence-transformers` 6.1.0:** lớp `CrossEncoder` để chạy bge-reranker-v2-m3 (chấm cặp câu hỏi–đoạn văn), dùng ở `dr/models/rerank.py`.
+- **`transformers` 5.18.0:** tải mDeBERTa-xnli và tokenizer của nó để chấm NLI (`dr/models/nli.py`).
+- **`sentencepiece` 0.2.2, `protobuf` 7.36.2:** thư viện phụ trợ cho tokenizer của các model đa ngôn ngữ (mDeBERTa, XLM-RoBERTa). Code không gọi trực tiếp.
+
+**Bảo mật và Microsoft 365**
+- **`cryptography` 50.0.2:** chỉ dùng ở chế độ Microsoft 365.
+  - `dr/m365/entra_auth.py`: kiểm chữ ký RS256 của token Entra bằng khóa công khai lấy từ JWKS, không dùng thư viện JWT bên ngoài.
+  - `dr/m365/auth.py`: ký "client assertion" bằng chứng chỉ, khi ứng dụng xác thực với Entra bằng certificate.
+
+**Huấn luyện và kiểm thử**
+- **`scikit-learn` 1.9.1:** `LogisticRegression` và `StratifiedKFold`, dùng trong `scripts/train_guard.py` để huấn luyện bộ phân loại chặn tấn công và chọn ngưỡng bằng kiểm định chéo. Lúc chạy, dịch vụ không cần scikit-learn: trọng số lưu trong `guard_model.json`, điểm được tính bằng numpy.
+- **`pytest` 9.1.1:** chạy bộ kiểm thử (`tests/`). `tests/conftest.py` trỏ sang database riêng `dataroom_test`.
+
+### 8.3. Thư viện chuẩn của Python đáng chú ý
+
+- **`hmac`, `hashlib`:**
+  - ký token phiên và vé mở file ở chế độ demo (`dr/gateway/auth.py`);
+  - chữ ký nội dung để nhận đoạn trùng (`answer.py`);
+  - khóa bộ nhớ đệm (`llm.py`, `memo.py`).
+
+  Chuỗi hash của nhật ký được tính trong Postgres (`audit_append`).
+- **`secrets`:** sinh "boundary" ngẫu nhiên mỗi lần hỏi để bọc tài liệu trong prompt, chống prompt injection nằm sẵn trong tài liệu (`llm.py`).
+- **`contextvars`:** biến `USER_TOKEN` mang token SSO của người dùng xuyên qua các luồng xử lý, để kiểm tra trực tiếp với SharePoint đúng bằng danh tính người hỏi (`dr/m365/tenant.py`, `dr/gateway/app.py`).
+- **`threading`:**
+  - luồng nền đồng bộ quyền và nạp tài liệu;
+  - khóa cho model dùng chung (`rerank.py`, `nli.py`);
+  - semaphore giới hạn số câu chạy LLM cùng lúc (`ratelimit.py`).
+- **`unicodedata`:** chuẩn hóa NFKC/NFC để lột ký tự ẩn và chữ "giả dạng", ví dụ chữ Cyrillic giống chữ Latin (`guard.py`); nhận diện tiếng Việt (`lang.py`).
+- **`decimal`:** so sánh con số theo giá trị, coi "2.786,9" và "2,786.9" là cùng một số (`verify.py`).
+- **`difflib`:** so khớp gần đúng câu trích với văn bản OCR (`verify.py`), tìm vùng ảnh chứa câu trích (`answer.crop_for`).
+- **`email`:** đọc file `.eml` và tệp đính kèm (`parsers.py`).
+- **`zipfile`:** kiểm tra hoặc sửa nội dung bên trong file Office (định dạng ZIP), ví dụ trong `make_brd.py`.
+
+### 8.4. Điểm cần xử lý về thư viện (phát hiện khi viết tài liệu)
+
+- **Thiếu khai báo trong `pyproject.toml`:** `scikit-learn`, `opencv-python`, `cryptography`, `mlx-vlm`, `paddlex` đang được code dùng nhưng không khai báo trực tiếp. Hiện chúng có trong môi trường nhờ `make setup` cài kèm hoặc nhờ phụ thuộc gián tiếp. Cài lại trên máy khác dễ bị thiếu; nên khai báo trực tiếp và ghim phiên bản.
+- **Khai báo nhưng không dùng:** `rank-bm25`. BM25 được tự viết: lớp `BM25` trong `dr/core/index.py` cho chỉ mục bộ nhớ, và SQL trong `schema.sql`/`pgindex.py` cho chỉ mục Postgres, để tính thống kê riêng từng site. Có thể bỏ khỏi danh sách.
+- **Cài trùng OpenCV:** môi trường có cả `opencv-python` 5.0.0.93 và `opencv-contrib-python` 4.10.0.84. Hai gói cùng cung cấp module `cv2` nên có thể xung đột; nên giữ một bản.
+- **Phiên bản chưa ghim:** `pyproject.toml` chỉ có mức tối thiểu. Để kết quả tái lập được (đặc biệt `transformers`, `sentence-transformers`, `torch`, `paddle*`), nên có file khóa phiên bản (ví dụ `uv.lock` hoặc `requirements.lock`).
+- **Thư viện tải từ Internet lúc chạy:** MSAL.js lấy từ CDN jsDelivr ở chế độ Microsoft 365; model Hugging Face tải lần đầu chạy. Môi trường on-prem không có Internet cần đóng gói sẵn hai thứ này.
