@@ -92,3 +92,14 @@ def test_red_team_findings_fixed(client):
     assert review.topics_of("How many shares will I be allocated?")
     assert review.answer_topics("Khoảng giá dự kiến từ 34.000 đến 40.000 đồng/cổ phần.")
     assert not review.answer_topics("Phần room ngoại dành riêng cho Nhóm B được chốt ở mức 18%, phần còn lại phân bổ theo kết quả dựng sổ.")
+
+
+
+def test_llm_timeout_gives_a_retry_message(client):
+    import httpx
+
+    def broken(question, passages, lang="vi"):
+        raise httpx.ReadTimeout("timed out")
+    appmod.S.deps = answer.Deps(llm=broken)
+    r = ask(client, "inv-a1", "Phí thu xếp nhóm A KS-GRPA-0001")
+    assert r["refused"] and not r["claims"] and "thử lại" in r["message"]
