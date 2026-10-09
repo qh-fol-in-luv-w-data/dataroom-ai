@@ -46,8 +46,16 @@ _HOMOGLYPHS = str.maketrans({
 _LEET = str.maketrans({"0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t", "@": "a", "$": "s", "!": "i"})
 
 
+_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def strip_controls(text: str) -> str:
+    """NUL and other C0 control characters carry no meaning in a question and break JSON/Postgres."""
+    return _CONTROL.sub("", text)
+
+
 def _chars(text: str) -> str:
-    t = unicodedata.normalize("NFKC", text)
+    t = unicodedata.normalize("NFKC", strip_controls(text))
     t = _INVISIBLE.sub("", t).translate(_HOMOGLYPHS)
     return unicodedata.normalize("NFC", t)
 
@@ -134,6 +142,10 @@ RULES: dict[str, str] = {
         rf"you are now|from now on you)\b{_W}\b(khong (con )?(bi )?(gioi han|kiem duyet|loc|rang buoc)|unrestricted|"
         rf"uncensored|unfiltered|no (filters?|rules|restrictions|limits)|dan\b|jailbr(eak|oken)|developer mode|"
         rf"che do (nha phat trien|khong gioi han)|evil|bat chap)"),
+    "gia_toan_quyen": (
+        rf"\b(nhu the|nhu la|coi nhu|gia nhu|gia su|as if|as though|assume|treat)\b{_W}"
+        rf"\b(toan quyen|full (access|permissions?|rights|privileges)|moi quyen|quyen (cao nhat|quan tri|admin)|"
+        rf"all (access|permissions?|rights)|unrestricted access|admin (access|rights))\b"),
     "the_gia": (
         r"(<\s*/?\s*(untrusted_document|system|assistant|instructions?|im_start|im_end)\b|\[/?(system|inst)\]|"
         r"^\s*(system|he thong)\s*:|#{2,}\s*(new )?(system )?instructions?|\"role\"\s*:\s*\"system\"|"
