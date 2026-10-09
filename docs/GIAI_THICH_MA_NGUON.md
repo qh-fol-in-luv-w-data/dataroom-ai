@@ -2027,7 +2027,7 @@ Giấy phép của các model: theo công bố của nhà phát triển, qwen2.5
 - **`decimal`:** so sánh con số theo giá trị, coi "2.786,9" và "2,786.9" là cùng một số (`verify.py`).
 - **`difflib`:** so khớp gần đúng câu trích với văn bản OCR (`verify.py`), tìm vùng ảnh chứa câu trích (`answer.crop_for`).
 - **`email`:** đọc file `.eml` và tệp đính kèm (`parsers.py`).
-- **`zipfile`:** kiểm tra hoặc sửa nội dung bên trong file Office (định dạng ZIP), ví dụ trong `make_brd.py`.
+- **`zipfile`:** mở bên trong file Office (định dạng ZIP). Ở bước an toàn (`safety.py`), dùng để nhận biết file Office bị mã hóa hoặc hỏng; khi đọc file (`parsers.py`) và khi tạo BRD (`make_brd.py`), dùng để đọc/sửa XML bên trong.
 
 ### 8.4. Điểm cần xử lý về thư viện (phát hiện khi viết tài liệu)
 
