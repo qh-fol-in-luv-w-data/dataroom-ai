@@ -132,6 +132,9 @@ def document_chunks(oid: str, codes: list[str], files: list[str], limit: int = 4
     return [r[0] for r in rows]
 
 
+_BOILERPLATE = re.compile(r"(^|[.!?]\s)\s*(pham vi chia se|phan loai|scope of sharing|classification)\s*:")
+
+
 def focus_sentences(question: str, llm_in: list[dict], deps: Deps, trace: Trace, n: int | None = None,
                     keep_order_only: bool = False) -> list[dict]:
     """Keep only the n sentences the reranker scores highest (in their original order). The kept
@@ -142,10 +145,18 @@ def focus_sentences(question: str, llm_in: list[dict], deps: Deps, trace: Trace,
     n = settings.max_sentences if n is None else n
     if not n or not deps.rerank:
         return llm_in
-    sents = [(i, j, s) for i, p in enumerate(llm_in) for j, s in enumerate(split_sentences(p["text"]))]
+    sents, seen = [], set()
+    for i, p in enumerate(llm_in):
+        for j, s in enumerate(split_sentences(p["text"])):
+            key = verify.norm(s)
+            # boilerplate footers ("Phạm vi chia sẻ…", "Phân loại…") and repeats carry nothing to answer from
+            if key in seen or _BOILERPLATE.search(unidecode(s).lower()):
+                continue
+            seen.add(key)
+            sents.append((i, j, s))
     if len(sents) <= n:
-        return llm_in
-    if keep_order_only:
+        keep = {(i, j) for i, j, _ in sents}
+    elif keep_order_only:
         keep = {(i, j) for i, j, _ in sents[:n]}
     else:
         scores = deps.rerank(question, [s for _, _, s in sents])
@@ -155,7 +166,7 @@ def focus_sentences(question: str, llm_in: list[dict], deps: Deps, trace: Trace,
         kept = [s for (pi, j, s) in sents if pi == i and (pi, j) in keep]
         if kept:
             out.append({**p, "text": "\n".join(kept)})
-    trace.add("Chọn câu liên quan trong các đoạn (rerank theo câu)", True, sentences=f"{n}/{len(sents)}",
+    trace.add("Chọn câu liên quan trong các đoạn (rerank theo câu)", True, sentences=f"{len(keep)}/{len(sents)}",
               passages=len(out))
     return out
 
@@ -423,7 +434,18 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
         return nothing_found(extra={"llm_no_answer": raw.get("no_answer"), "dropped": [r for _, r in dropped]})
 
     # ---- sensitive content in the answer itself (the question may have dodged the keywords)
+    notice = None
     if not is_staff and settings.sensitive_mode == "contact":
+        if plan.intent != "fact" and len(kept) > 1:
+            # a summary or list keeps its other points; only the sensitive ones are left out
+            per = [review.answer_topics(" ".join([cl.text] + [c.quote for c in cl.citations])) for cl in kept]
+            if any(per) and not all(per):
+                cut = sorted({t for ts in per for t in ts})
+                kept = [cl for cl, ts in zip(kept, per) if not ts]
+                notice = (f"Một số nội dung nhạy cảm đã được lược bỏ; để được hỗ trợ phần này, bạn hãy liên hệ trực tiếp "
+                          f"{settings.sensitive_contact}." if lang == "vi" else
+                          f"Some sensitive content was left out; for that part, please contact {settings.sensitive_contact_en} directly.")
+                trace.add("Lược bỏ ý chạm chủ đề nhạy cảm", True, topics=cut, removed=sum(1 for ts in per if ts))
         out_topics = review.answer_topics(" ".join([cl.text for cl in kept] + [c.quote for cl in kept for c in cl.citations]))
         if out_topics:
             msg = (f"Nội dung này hơi nhạy cảm, bạn hãy liên hệ trực tiếp {settings.sensitive_contact} để được hỗ trợ."
@@ -493,7 +515,7 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
     })
     trace.add("Ghi nhật ký (chuỗi hash)", True, audit_seq=seq)
     result = {"refused": False, "message": None, "claims": claims_out, "citations": cites, "trace": trace.steps,
-              "audit_seq": seq, "lang": lang, "mode": plan.intent, "verbatim": verbatim}
+              "audit_seq": seq, "lang": lang, "mode": plan.intent, "verbatim": verbatim, "notice": notice}
     # ---- sensitive questions (BR-08): investors get the answer only after a reviewer approves it
     if topics and not is_staff and settings.sensitive_mode == "review":
         trace.add("Câu hỏi nhạy cảm → bản nháp chờ người duyệt", True, topics=topics)

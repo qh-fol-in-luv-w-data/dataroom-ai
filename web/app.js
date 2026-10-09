@@ -40,6 +40,13 @@ const ICONS = {
   globe: '<circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>',
   refresh: '<polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>',
   key: '<circle cx="7.5" cy="15.5" r="5.5"/><path d="M21 2l-9.6 9.6M15.5 7.5l3 3L22 7l-3-3"/>',
+  panel: '<rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/>',
+  edit: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>',
+  arrowUp: '<line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/>',
+  chevron: '<polyline points="6 9 12 15 18 9"/>',
+  copy: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
+  thumbUp: '<path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.3a2 2 0 0 0 2-1.7l1.4-9a2 2 0 0 0-2-2.3z"/><path d="M7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/>',
+  thumbDown: '<path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.7a2 2 0 0 0-2 1.7l-1.4 9a2 2 0 0 0 2 2.3z"/><path d="M17 2h2.7A2.3 2.3 0 0 1 22 4v7a2.3 2.3 0 0 1-2.3 2H17"/>',
 };
 const icon = (n, cls = "") => `<svg class="i ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[n] || ""}</svg>`;
 const COLORS = ["#0e6b5c", "#3b5bdb", "#c4501b", "#6941c6", "#107c41", "#b42318", "#0e9384", "#2e5aac", "#9e3a8c", "#475467"];
@@ -185,7 +192,7 @@ async function postStream(path, body, onEvent) {
 function logout(msg) {
   if (MSAL && MSAL.getActiveAccount()) { MSAL.logoutRedirect({ postLogoutRedirectUri: location.origin + "/" }); return; }
   TOKEN = null; ME = null; store.del("dr-token");
-  CHAT.length = 0;
+  CHAT = []; CONVS = []; CUR = null;
   location.hash = "";
   renderLogin(msg);
 }
@@ -274,9 +281,6 @@ function renderLoginMicrosoft(message) {
 
 // ------------------------------------------------------------------ shell + router
 const NAV = [
-  { sec: "Trợ lý", items: [
-    { id: "chat", label: "Hỏi đáp", icon: "chat", who: "user" },
-  ] },
   { sec: "Quản trị Data Room", items: [
     { id: "perms", label: "Phân quyền", icon: "key", who: "admin" },
     { id: "matrix", label: "Ma trận quyền", icon: "grid", who: "admin" },
@@ -287,7 +291,7 @@ const NAV = [
   ] },
 ];
 const TITLES = {
-  chat: ["Hỏi đáp", "Chỉ dùng tài liệu bạn được mở trên SharePoint và được phép dùng AI"],
+  chat: ["Hỏi đáp", ""],
   search: ["Tìm hồ sơ", "Tìm theo từ khóa, nội dung hoặc ý nghĩa — chỉ trong phạm vi của bạn"],
   drafts: ["Câu hỏi chờ duyệt", "Câu hỏi thuộc chủ đề nhạy cảm được Ban IPO xem xét trước khi trả lời"],
   review: ["Duyệt câu trả lời", "Bản nháp cho câu hỏi nhạy cảm — chỉ xem được khi bạn có quyền trên mọi nguồn"],
@@ -303,67 +307,96 @@ const isAdmin = () => ME && ME.type === "admin";
 const roleLabel = () => isAdmin() ? "Quản trị Data Room"
   : (ME.roles || []).includes("Staff.AI") ? (ME.type === "guest" ? "Cố vấn" : "Nhân viên")
   : ME.type === "guest" ? "Nhà đầu tư" : "Người dùng";
-function updateRecent() {
-  const el = $("#sb-recent"); if (!el) return;
-  const items = CHAT.map((m, i) => [m, i]).reverse().slice(0, 12);
-  el.innerHTML = items.length ? items.map(([m, i]) => `<button data-i="${i}" title="${esc(m.q)}">${icon("chat")}<span>${esc(m.q)}</span></button>`).join("")
-    : '<div class="sb-empty">Chưa có câu hỏi nào trong phiên này</div>';
-  $$("button", el).forEach((b) => b.onclick = () => {
-    if (!location.hash.startsWith("#/chat")) location.hash = "#/chat";
-    setTimeout(() => { const t = $("#q-" + b.dataset.i); if (t) { t.scrollIntoView({ behavior: "smooth", block: "start" }); } $("#sidebar").classList.remove("open"); }, 60);
-  });
-}
 const visibleNav = (i) => i.who === "admin" ? isAdmin()
   : i.who === "reviewer" ? !isAdmin() && (ME.roles || []).includes("Reviewer") : !isAdmin();
 
+// ------------------------------------------------------------------ conversations (this session only)
+// Kept in memory, never in browser storage: answers quote confidential documents, and a stored copy
+// would outlive a permission change and stay on shared computers.
+let CONVS = [];            // [{id, title, items: [message]}], newest first
+let CHAT = [];             // messages of the open conversation
+let CUR = null;
+function newConversation() {
+  if (CHAT.some((m) => !m.r)) return;
+  CUR = null; CHAT = [];
+  closePanel();
+  if (!location.hash.startsWith("#/chat")) location.hash = "#/chat"; else pageChat($("#page"));
+  updateRecent();
+}
+function openConversation(id) {
+  const c = CONVS.find((x) => x.id === id); if (!c || CHAT.some((m) => !m.r)) return;
+  CUR = c.id; CHAT = c.items;
+  closePanel();
+  if (!location.hash.startsWith("#/chat")) location.hash = "#/chat"; else pageChat($("#page"));
+  updateRecent();
+  $("#sidebar").classList.remove("open");
+}
+function updateRecent() {
+  const el = $("#sb-recent"); if (!el) return;
+  el.innerHTML = CONVS.length ? CONVS.map((c) => `<button data-c="${c.id}" class="${c.id === CUR ? "active" : ""}" title="${esc(c.title)}">
+      <span>${esc(c.title)}</span></button>`).join("")
+    : '<div class="sb-empty">Các cuộc trò chuyện trong phiên này sẽ hiện ở đây</div>';
+  $$("button", el).forEach((b) => b.onclick = () => openConversation(b.dataset.c));
+}
+
 function renderShell() {
   $("#app").innerHTML = `
-  <div class="shell">
+  <div class="shell ${store.get("dr-sb") === "0" ? "sb-collapsed" : ""}" id="shell">
     <aside class="sidebar" id="sidebar">
-      <div class="sb-brand"><span class="sb-logo">SM</span><div><b>Data Room AI</b><small>Sao Mai · IPO 2026</small></div></div>
-      ${isAdmin() ? "" : `<button class="sb-new" id="new-chat">${icon("plus")}<span>Cuộc hỏi mới</span></button>`}
+      <div class="sb-brand"><span class="sb-logo">SM</span><div><b>Data Room AI</b><small>Sao Mai · IPO 2026</small></div>
+        <button class="btn icon ghost sb-toggle" id="sb-toggle" title="Thu gọn thanh bên" aria-label="Thu gọn thanh bên">${icon("panel")}</button></div>
+      ${isAdmin() ? "" : `<button class="sb-new" id="new-chat">${icon("edit")}<span>Cuộc trò chuyện mới</span></button>`}
       <nav class="sb-nav" aria-label="Điều hướng">${NAV.map((s) => {
         const items = s.items.filter(visibleNav);
-        return items.length ? (isAdmin() ? `<div class="sb-sec">${s.sec}</div>` : "") + items.map((i) =>
+        return items.length ? `<div class="sb-sec">${s.sec}</div>` + items.map((i) =>
           `<a href="#/${i.id}" data-id="${i.id}"><span class="sb-ico">${icon(i.icon)}</span><span>${i.label}</span></a>`).join("") : "";
       }).join("")}
-        ${isAdmin() ? "" : '<div class="sb-sec">Câu đã hỏi</div><div class="sb-recent" id="sb-recent"></div>'}</nav>
-      <div class="sb-user">${avatar(ME.name, 36)}<div class="who"><b>${esc(ME.name)}</b><small>${esc(roleLabel())}</small></div>
-        <button class="btn icon" id="logout" title="Đăng xuất" aria-label="Đăng xuất">${icon("logout")}</button></div>
+        ${isAdmin() ? "" : '<div class="sb-sec">Gần đây</div><div class="sb-recent" id="sb-recent"></div>'}</nav>
+      <div class="sb-user">${avatar(ME.name, 32)}<div class="who"><b>${esc(ME.name)}</b><small>${esc(roleLabel())}</small></div>
+        <button class="btn icon ghost" id="theme" title="Đổi giao diện sáng/tối" aria-label="Đổi giao diện sáng/tối">${icon(document.documentElement.dataset.theme === "dark" ? "sun" : "moon")}</button>
+        <button class="btn icon ghost" id="logout" title="Đăng xuất" aria-label="Đăng xuất">${icon("logout")}</button></div>
     </aside>
     <div class="main">
-      <header class="topbar">
+      <header class="topbar" id="topbar">
         <button class="btn icon ghost menu-btn" id="menu" aria-label="Mở menu">${icon("menu")}</button>
-        <div><h1 id="page-title"></h1><div class="sub" id="page-sub"></div></div>
+        <button class="btn icon ghost sb-open" id="sb-open" title="Mở thanh bên" aria-label="Mở thanh bên">${icon("panel")}</button>
+        <div class="tb-title"><h1 id="page-title"></h1><div class="sub" id="page-sub"></div></div>
         <span class="spacer"></span>
         <div class="pills" id="pills"></div>
-        <button class="btn icon ghost" id="theme" aria-label="Đổi giao diện sáng/tối">${icon(document.documentElement.dataset.theme === "dark" ? "sun" : "moon")}</button>
       </header>
       <main id="page"></main>
     </div>
+    <aside class="panel" id="panel" aria-label="Nguồn và kiểm chứng"></aside>
   </div>`;
   $("#logout").onclick = () => logout();
-  const nc = $("#new-chat");
-  if (nc) nc.onclick = () => { if (CHAT.some((m) => !m.r)) return; CHAT.length = 0; location.hash = "#/chat"; renderThread(); updateRecent(); $("#q")?.focus(); };
+  const nc = $("#new-chat"); if (nc) nc.onclick = newConversation;
   updateRecent();
   $("#menu").onclick = () => $("#sidebar").classList.toggle("open");
+  const toggle = () => { const c = $("#shell").classList.toggle("sb-collapsed"); store.set("dr-sb", c ? "0" : "1"); };
+  $("#sb-toggle").onclick = toggle; $("#sb-open").onclick = toggle;
   $("#theme").onclick = () => {
     const t = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
     document.documentElement.dataset.theme = t; store.set("dr-theme", t);
     $("#theme").innerHTML = icon(t === "dark" ? "sun" : "moon");
   };
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closePanel();
+    if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "o" && !isAdmin()) { e.preventDefault(); newConversation(); }
+  });
 }
 
 function route() {
   if (!ME) return;
   const def = isAdmin() ? "perms" : "chat";
   let id = (location.hash.replace(/^#\/?/, "") || def).split("?")[0];
-  const allowed = NAV.flatMap((s) => s.items).filter(visibleNav).map((i) => i.id);
+  const allowed = isAdmin() ? NAV.flatMap((s) => s.items).filter(visibleNav).map((i) => i.id) : ["chat"];
   if (!allowed.includes(id)) { id = def; history.replaceState(null, "", "#/" + id); }
   $$(".sb-nav a").forEach((a) => a.classList.toggle("active", a.dataset.id === id));
   $("#sidebar").classList.remove("open");
+  closePanel();
   const [t, sub] = TITLES[id];
-  $("#page-title").textContent = t; $("#page-sub").textContent = sub;
+  $("#page-title").textContent = id === "chat" ? chatTitle() : t; $("#page-sub").textContent = sub;
+  $("#topbar").classList.toggle("chat-top", id === "chat");
   document.title = `${t} · Data Room AI`;
   const page = $("#page");
   page.className = id === "chat" ? "" : "page";
@@ -378,7 +411,7 @@ async function boot() {
   pollStatus();
 }
 
-// ------------------------------------------------------------------ status pills
+// ------------------------------------------------------------------ status pills (admin)
 async function pollStatus() {
   if (!TOKEN || !ME || !isAdmin()) return;
   try { STATUS_CACHE = await api("/api/status"); } catch { return; }
@@ -396,59 +429,79 @@ async function pollStatus() {
 setInterval(pollStatus, 3000);
 
 // ------------------------------------------------------------------ chat
-const CHAT = [];
 const SUGGEST = [   // [label, question, group needed (null = everyone), staff only]
   ["Tài chính", "Doanh thu thuần năm 2025 của Sao Mai là bao nhiêu?", null],
-  ["Nhà máy", "Tổng công suất lắp đặt các nhà máy là bao nhiêu MW?", null],
-  ["Đợt IPO", "Đợt IPO chào bán bao nhiêu cổ phần?", null],
+  ["Tổng hợp", "Tóm tắt các nội dung chính của bản cáo bạch", null],
+  ["Liệt kê", "Sao Mai có những nhà máy nào, công suất bao nhiêu?", null],
   ["Thỏa thuận", "Phí thu xếp áp dụng cho nhóm quỹ trong nước là bao nhiêu?", "DR-INV-A"],
   ["Thỏa thuận", "Tỷ lệ room ngoại dành riêng cho Nhóm B là bao nhiêu?", "DR-INV-B"],
   ["Thỏa thuận", "Nhà đầu tư chiến lược được đề cử bao nhiêu thành viên HĐQT?", "DR-INV-C"],
   ["Nội bộ", "Khoản dự phòng tranh chấp với nhà thầu là bao nhiêu?", null, true],
-  ["Bản scan", "Biên bản xác nhận công suất lắp đặt các nhà máy ghi gì?", null],
+  ["Nguyên văn", "Trích nguyên văn điều khoản thanh toán trong hợp đồng mua bán điện", null],
   ["English", "What was Sao Mai's net revenue in 2025?", null],
 ];
 const mySuggestions = () => {
   const staff = (ME.roles || []).includes("Staff.AI");
-  return SUGGEST.filter(([, , grp, staffOnly]) => staff ? true : !staffOnly && (!grp || (ME.groups || []).includes(grp)));
+  return SUGGEST.filter(([, , grp, staffOnly]) => staff ? true : !staffOnly && (!grp || (ME.groups || []).includes(grp))).slice(0, 6);
 };
-const THINK = ["Kiểm tra danh tính, vai trò và độ tươi nguồn quyền", "Lọc tài liệu theo quyền và kiểm tra an toàn câu hỏi",
-  "Tìm kiếm lai và xếp hạng lại", "Hỏi lại SharePoint bằng danh tính của bạn", "Model local đọc tài liệu và chọn câu trả lời",
-  "Kiểm chứng trích dẫn, con số và quyền lần cuối"];
-// server progress → number of finished rows above (step names come from dr/core/answer.py)
-const STEP_DONE = [["Cổng 4", 1], ["Cổng 1+3", 2], ["Lớp đầu vào", 2], ["Tìm kiếm", 2], ["Rerank", 3],
-  ["Cổng 2 – kiểm tra trực tiếp", 4], ["LLM", 5], ["Thử lại", 5], ["Kiểm chứng", 5]];
+const MODE_LABEL = { fact: "Trả lời nhanh", summary: "Tổng hợp", compare: "So sánh", list: "Liệt kê", full: "Nguyên văn" };
+// live status line while answering: server step name -> what the user reads
+const STAGE_TEXT = { search: "Đang tìm trong tài liệu bạn được phép xem", live: "Đang hỏi lại SharePoint bằng tài khoản của bạn",
+  llm: "Đang đọc tài liệu và soạn câu trả lời", verify: "Đang kiểm chứng trích dẫn và con số", queue: "Đang chờ lượt xử lý" };
+const STEP_TEXT = [["Cổng 4", "Đã xác nhận danh tính và quyền dùng AI"], ["Cổng 1+3", "Đã lọc tài liệu theo quyền của bạn"],
+  ["Lớp đầu vào", "Đã kiểm tra an toàn câu hỏi"], ["Phân loại", "Đã xác định kiểu câu trả lời"], ["Tìm kiếm", "Đã tìm tài liệu liên quan"],
+  ["Đọc toàn bộ", "Đã mở tài liệu được nêu tên"], ["Rerank", "Đã xếp hạng đoạn liên quan nhất"],
+  ["Cổng 2 – kiểm tra trực tiếp", "SharePoint đã xác nhận quyền mở từng file"], ["Chọn câu", "Đã chọn câu liên quan"],
+  ["LLM", "Đã soạn câu trả lời"], ["Kiểm chứng", "Đã đối chiếu trích dẫn nguyên văn"], ["Kiểm tra đúng trọng tâm", "Đã kiểm tra đúng trọng tâm"],
+  ["NLI", "Đã chấm độ khớp ý"], ["Cổng 2 + 4", "Đã kiểm tra quyền lần cuối"]];
 function onProgress(m, ev) {
-  if (ev.stage === "queue") m.queued = true;
+  if (ev.stage) m.now = STAGE_TEXT[ev.stage] || m.now;
   if (ev.step) {
-    m.queued = false;
-    const hit = STEP_DONE.find(([p]) => ev.step.startsWith(p));
-    if (hit && hit[1] > m.done) { for (let k = m.done; k < hit[1]; k++) m.ms[k] = Date.now() - m.t0; m.done = hit[1]; }
+    const t = STEP_TEXT.find(([p]) => ev.step.startsWith(p));
+    m.steps.push({ text: t ? t[1] : ev.step, ms: Date.now() - m.t0, ok: ev.ok });
   }
   const el = $("#ans-" + CHAT.indexOf(m)); if (el && !m.r) el.innerHTML = renderThinking(m);
+}
+const chatTitle = () => (CONVS.find((c) => c.id === CUR) || {}).title || "Cuộc trò chuyện mới";
+const greeting = () => { const h = new Date().getHours(); return h < 11 ? "Chào buổi sáng" : h < 14 ? "Chào buổi trưa" : h < 18 ? "Chào buổi chiều" : "Chào buổi tối"; };
+
+function composerHTML(canAI, hero) {
+  return `<form class="composer-box ${hero ? "hero-box" : ""}" id="ask">
+      <label class="sr-only" for="q">Câu hỏi</label>
+      <textarea id="q" rows="${hero ? 2 : 1}" placeholder="${canAI ? "Hỏi về tài liệu trong Data Room…" : "Tài khoản của bạn chưa được cấp quyền dùng trợ lý AI"}" ${canAI ? "" : "disabled"}></textarea>
+      <div class="cb-row">
+        ${ME.roles.includes("Staff.AI") ? `<select id="scope-site" class="cb-select" title="Giới hạn phạm vi tìm"><option value="">Mọi site được phép</option>${(ME.sites || []).map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join("")}</select>` : '<span class="cb-hint">Tự chọn trả lời nhanh, tổng hợp, so sánh, liệt kê hay nguyên văn theo câu hỏi</span>'}
+        <span class="spacer"></span>
+        <button class="send" id="send" type="submit" aria-label="Gửi" ${canAI ? "" : "disabled"}>${icon("arrowUp")}</button>
+      </div>
+    </form>`;
 }
 
 function pageChat(page) {
   const canAI = ME.roles.some((r) => r === "Investor.AI" || r === "Staff.AI");
-  page.innerHTML = `
-  <div class="chat">
-    <div class="thread" id="thread"><div class="thread-inner" id="thread-inner"></div></div>
-    <div class="composer"><div class="composer-inner">
-      <form class="composer-box" id="ask">
-        <label class="sr-only" for="q">Câu hỏi</label>
-        <textarea id="q" rows="1" placeholder="${canAI ? "Hỏi về tài liệu trong Data Room… (Enter để gửi, Shift+Enter xuống dòng)" : "Tài khoản của bạn chưa được cấp quyền dùng trợ lý AI"}" ${canAI ? "" : "disabled"}></textarea>
-        <button class="btn primary icon" id="send" type="submit" aria-label="Gửi" ${canAI ? "" : "disabled"}>${icon("send")}</button>
-      </form>
-      <div class="composer-meta">
-        ${ME.roles.includes("Staff.AI") ? `<label>Phạm vi <select id="scope-site"><option value="">Mọi site được phép</option>${(ME.sites || []).map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join("")}</select></label>` : ""}
-        <span>${icon("shield")} Câu trả lời chỉ hiển thị sau khi qua đủ 4 cổng quyền và bước kiểm chứng.</span>
-      </div>
-    </div></div>
-  </div>`;
-  renderThread();
+  $("#page-title").textContent = chatTitle();
+  if (!CHAT.length) {
+    page.innerHTML = `<div class="chat empty-chat"><div class="welcome">
+        <div class="wl-mark">${icon("spark")}</div>
+        <h2>${greeting()}, ${esc(ME.name.split(" ").slice(-1)[0])}</h2>
+        <p>Hỏi về tài liệu trong Data Room bằng tiếng Việt (có dấu hoặc không dấu) hoặc tiếng Anh. Mọi câu trả lời chỉ dùng tài liệu bạn có quyền xem và luôn kèm trích dẫn.</p>
+        ${composerHTML(canAI, true)}
+        ${canAI ? `<div class="suggest">${mySuggestions().map(([tag, s]) => `<button type="button" data-q="${esc(s)}"><small>${tag}</small><span>${esc(s)}</span></button>`).join("")}</div>`
+          : '<div class="notice bad">' + icon("lock") + '<div>Tài khoản của bạn chưa được cấp quyền dùng trợ lý AI. Vui lòng liên hệ Ban IPO.</div></div>'}
+      </div></div>`;
+    $$(".suggest button", page).forEach((b) => b.onclick = () => ask(b.dataset.q));
+  } else {
+    page.innerHTML = `<div class="chat">
+      <div class="thread" id="thread"><div class="thread-inner" id="thread-inner"></div></div>
+      <div class="composer"><div class="composer-inner">${composerHTML(canAI, false)}
+        <div class="disclaimer">Trợ lý chỉ dùng tài liệu bạn có quyền xem trên SharePoint. Hãy đối chiếu trích dẫn trước khi ra quyết định.</div>
+      </div></div></div>`;
+    renderThread();
+  }
   const q = $("#q");
-  q.addEventListener("input", () => { q.style.height = "auto"; q.style.height = Math.min(q.scrollHeight, 160) + "px"; });
-  q.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#ask").requestSubmit(); } });
+  const grow = () => { q.style.height = "auto"; q.style.height = Math.min(q.scrollHeight, 220) + "px"; };
+  q.addEventListener("input", grow);
+  q.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); $("#ask").requestSubmit(); } });
   $("#ask").onsubmit = (e) => { e.preventDefault(); ask(q.value.trim()); };
   if (canAI) q.focus();
 }
@@ -456,90 +509,122 @@ function pageChat(page) {
 function renderThread() {
   const inner = $("#thread-inner");
   if (!inner) return;
-  if (!CHAT.length) {
-    inner.innerHTML = `<div class="hero">
-      <h2>Xin chào, ${esc(ME.name.split(" ").slice(-1)[0])}</h2>
-      <p>Hỏi bằng tiếng Việt (có dấu hoặc không dấu) hoặc tiếng Anh. Mỗi câu trả lời đều kèm trích dẫn nguyên văn và link tới tài liệu gốc trên SharePoint.</p>
-      ${ME.roles.some((r) => r.endsWith(".AI")) ? "" : '<div class="scope-strip"><span class="chip bad">Tài khoản chưa được cấp quyền dùng trợ lý AI</span></div>'}
-      <div class="suggest">${mySuggestions().map(([tag, s]) => `<button type="button" data-q="${esc(s)}"><small>${tag}</small>${esc(s)}</button>`).join("")}</div>
-    </div>`;
-    $$(".suggest button", inner).forEach((b) => b.onclick = () => ask(b.dataset.q));
-    return;
-  }
-  updateRecent();
-  inner.innerHTML = CHAT.map((m, i) => `<div class="q-bubble" id="q-${i}">${esc(m.q)}</div><div class="a-card" id="ans-${i}">${m.r ? renderAnswer(m.r, i) : renderThinking(m)}</div>`).join("");
+  inner.innerHTML = CHAT.map((m, i) => `<div class="msg-user" id="q-${i}"><div class="bubble">${esc(m.q)}</div></div>
+    <div class="msg-ai" id="ans-${i}">${m.r ? renderAnswer(m.r, i) : renderThinking(m)}</div>`).join("");
   CHAT.forEach((m, i) => { if (m.r) wireAnswer($("#ans-" + i), i); });
-  const th = $("#thread"); th.scrollTop = th.scrollHeight;
+  const th = $("#thread"); if (th) th.scrollTop = th.scrollHeight;
 }
 
 const secs = (ms) => (ms / 1000).toFixed(1).replace(".", ",") + " s";
 function renderThinking(m) {
-  const step = m.done || 0, now = Date.now() - (m.t0 || Date.now());
-  return `<div class="a-head"><span class="dot">${icon("spark")}</span> ${m.queued ? "Đang chờ lượt xử lý" : "Đang xử lý"}
-      <span class="muted small" style="margin-left:auto" data-elapsed>${secs(now)}</span></div>
-    <div class="thinking">${THINK.map((t, i) =>
-    `<div class="row" style="opacity:${i <= step ? 1 : .35}">${i < step ? `<span class="chip ok" style="padding:0 5px">${icon("check")}</span>` : i === step ? '<span class="spinner"></span>' : '<span style="width:14px"></span>'} ${t}${i < step && m.ms ? ` <span class="muted small">${secs(m.ms[i])}</span>` : ""}</div>`).join("")}</div>`;
+  const now = Date.now() - (m.t0 || Date.now());
+  return `<details class="thinking" ${m.open ? "open" : ""} ontoggle="CHAT[${CHAT.indexOf(m)}] && (CHAT[${CHAT.indexOf(m)}].open = this.open)">
+      <summary><span class="pulse"></span><span class="shimmer">${esc(m.now || "Đang kiểm tra quyền truy cập")}</span>
+        <span class="muted small" data-elapsed>${secs(now)}</span>${icon("chevron", "chev")}</summary>
+      <ol class="think-steps">${m.steps.map((s) => `<li class="${s.ok === false ? "bad" : ""}">${icon(s.ok === false ? "x" : "check")}<span>${esc(s.text)}</span><span class="muted small">${secs(s.ms)}</span></li>`).join("")}</ol>
+    </details>`;
+}
+
+// One reading of an answer: prose for one claim, bullets for several, quotes for full text.
+function answerBody(r, i, animate) {
+  let w = 0;
+  const words = (t) => animate ? t.split(/(\s+)/).map((x) => x.trim() ? `<span class="w" style="animation-delay:${Math.min(900, (w++) * 18)}ms">${esc(x)}</span>` : x).join("") : esc(t);
+  const refs = (c) => c.refs.map((n) => `<button class="ref" data-n="${n}" title="${esc((r.citations.find((x) => x.n === n) || {}).name || "")}" aria-label="Nguồn ${n}">${n}</button>`).join("");
+  const flag = (c) => (c.ocr_doubt || []).length ? ` <span class="chip warn" title="Bộ đọc OCR thứ hai không đọc ra đúng con số này — hãy đối chiếu ảnh gốc trong khung nguồn">số từ bản scan chưa xác nhận: ${esc(c.ocr_doubt.join(", "))}</span>`
+    : c.uncertain ? ' <span class="chip warn" title="Điểm khớp ý thấp — hãy đọc câu trích">chưa chắc</span>' : "";
+  if (r.verbatim) return `<div class="quotes">${r.claims.map((c) => `<blockquote>${words(c.text.replace(/^“|”$/g, ""))}${refs(c)}${flag(c)}</blockquote>`).join("")}</div>`;
+  if (r.claims.length === 1) return `<p class="prose">${words(r.claims[0].text)}${refs(r.claims[0])}${flag(r.claims[0])}</p>`;
+  return `<ul class="prose">${r.claims.map((c) => `<li>${words(c.text)}${refs(c)}${flag(c)}</li>`).join("")}</ul>`;
 }
 
 function renderAnswer(r, i) {
-  const chips = [
-    r.approved ? `<span class="chip ok" title="Câu hỏi nhạy cảm — đã qua người duyệt">${icon("check")} Ban IPO đã duyệt${r.edited ? " · có hiệu đính" : ""}</span>` : "",
-    r.mode === "quote" ? '<span class="chip" title="Tài khoản chưa có quyền tổng hợp: chỉ trả câu trích nguyên văn">Chế độ tra cứu</span>' : "",
-    r.lang === "en" ? '<span class="chip info">EN</span>' : "",
-    r.withdrawn ? `<span class="chip warn" title="Quyền của bạn đã thay đổi sau khi duyệt">${r.withdrawn} ý đã rút lại</span>` : "",
-  ].join("");
-  const fb = r.audit_seq && !r.refused && !r.pending_review && !r.approved ? `<span class="fb">
-      <button class="btn icon ghost sm" data-fb="up" title="Câu trả lời đúng" aria-label="Đúng">👍</button>
-      <button class="btn icon ghost sm" data-fb="down" title="Câu trả lời sai" aria-label="Sai">👎</button></span>` : "";
-  const head = `<div class="a-head"><span class="dot">${icon("spark")}</span> Trợ lý · ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}${r.elapsed_ms ? ` · ${secs(r.elapsed_ms)}` : ""}${r.audit_seq ? ` · nhật ký #${r.audit_seq}` : ""} ${chips}<span style="flex:1"></span>${fb}</div>`;
-  const trace = `<details class="trace"><summary>${icon("shield")} Chi tiết 4 cổng quyền và các bước (${(r.trace || []).length})</summary><ol class="steps">${(r.trace || []).map((s) => {
+  const notice = (cls, ic, text) => `<div class="notice ${cls}">${icon(ic)}<div>${esc(text)}</div></div>`;
+  const meta = [r.mode && MODE_LABEL[r.mode], r.lang === "en" ? "English" : "", r.elapsed_ms ? secs(r.elapsed_ms) : "",
+    r.audit_seq ? `nhật ký #${r.audit_seq}` : ""].filter(Boolean).join(" · ");
+  const traceBtn = (r.trace || []).length ? `<button class="act" data-trace title="Các bước kiểm tra quyền và kiểm chứng">${icon("shield")}<span>Chi tiết kiểm tra</span></button>` : "";
+  if (r.sensitive) return notice("warm", "users", r.message) + `<div class="actions">${traceBtn}<span class="meta">${esc(meta)}</span></div>`;
+  if (r.out_of_scope) return notice("cool", "lock", r.message) + `<div class="actions">${traceBtn}<span class="meta">${esc(meta)}</span></div>`;
+  if (r.refused) return `<p class="prose muted-prose">${esc(r.message)}</p><div class="actions">${traceBtn}<span class="meta">${esc(meta)}</span></div>`;
+  if (r.pending_review) return notice("warm", "users", r.message) + `<div class="muted small">Mã bản nháp #${r.draft_id} · trang này tự cập nhật khi có kết quả duyệt</div>`;
+  const m = typeof i === "number" ? CHAT[i] : null;
+  const animate = !!(m && m.fresh);
+  const chips = [r.approved ? `<span class="chip ok">${icon("check")} Ban IPO đã duyệt${r.edited ? " · có hiệu đính" : ""}</span>` : "",
+    r.withdrawn ? `<span class="chip warn" title="Quyền của bạn đã thay đổi sau khi duyệt">${r.withdrawn} ý đã rút lại</span>` : ""].join("");
+  const sources = `<div class="sources"><span class="src-label">Nguồn</span>${r.citations.map((c) =>
+    `<button class="src" data-n="${c.n}" title="${esc(c.name)} · ${esc(c.locator)}"><b>${c.n}</b>${ftype((c.name.split(".").pop() || "").toLowerCase())}<span>${esc(c.name)}</span></button>`).join("")}</div>`;
+  const fb = r.audit_seq && !r.approved ? `<button class="act ${m && m.fb === "up" ? "on" : ""}" data-fb="up" title="Câu trả lời đúng" aria-label="Đúng">${icon("thumbUp")}</button>
+      <button class="act ${m && m.fb === "down" ? "on" : ""}" data-fb="down" title="Câu trả lời sai" aria-label="Sai">${icon("thumbDown")}</button>` : "";
+  return `${chips ? `<div class="chips">${chips}</div>` : ""}<div class="answer ${animate ? "reveal" : ""}">${answerBody(r, i, animate)}</div>
+    ${r.notice ? notice("warm small-notice", "users", r.notice) : ""}${sources}
+    <div class="actions"><button class="act" data-copy title="Sao chép câu trả lời kèm nguồn" aria-label="Sao chép">${icon("copy")}</button>${fb}${traceBtn}<span class="meta">${esc(meta)}</span></div>`;
+}
+
+// ------------------------------------------------------------------ sources / checks panel
+let PANEL = null;    // {i, tab, n}
+function closePanel() { PANEL = null; const p = $("#panel"); if (p) { p.innerHTML = ""; } $("#shell")?.classList.remove("panel-open"); }
+function openPanel(i, tab, n) {
+  const m = typeof i === "number" ? CHAT[i] : null;
+  if (!m || !m.r) return;
+  PANEL = { i, tab, n };
+  const r = m.r, p = $("#panel");
+  const tabs = `<div class="pn-tabs">${(r.citations || []).length ? `<button data-tab="src" class="${tab === "src" ? "active" : ""}">Nguồn (${r.citations.length})</button>` : ""}
+    <button data-tab="trace" class="${tab === "trace" ? "active" : ""}">Các bước kiểm tra (${(r.trace || []).length})</button>
+    <span class="spacer"></span><button class="btn icon ghost" id="pn-close" aria-label="Đóng">${icon("x")}</button></div>`;
+  const src = (r.citations || []).map((c) => `<div class="pn-src ${c.n === n ? "focus" : ""}" id="pn-${c.n}">
+      <div class="cite-top"><span class="cite-n">${c.n}</span>${ftype((c.name.split(".").pop() || "").toLowerCase())}<span class="cite-name" title="${esc(c.name)}">${esc(c.name)}</span></div>
+      <div class="cite-loc">${esc(SITE_LABEL[c.site_id] || c.site_id)} · ${esc(c.locator)}${c.ocr ? " · bản scan (OCR)" : ""}</div>
+      <blockquote>${esc(c.quote)}</blockquote>
+      ${c.crop ? `<figure class="crop"><img loading="lazy" alt="Vùng tương ứng trên bản scan gốc" src="/crop/${encodeURIComponent(c.item_id)}?ticket=${encodeURIComponent(c.crop.ticket || "")}&page=${encodeURIComponent(c.crop.page)}${c.crop.box ? "&box=" + c.crop.box.join(",") : ""}"><figcaption>${c.crop.box ? "Vùng gốc trên bản scan (đã nắn thẳng)" : "Trang scan gốc (đã nắn thẳng)"}</figcaption></figure>` : ""}
+      <button class="btn sm" data-open="${esc(c.item_id)}" title="Hệ thống kiểm tra quyền của tài khoản bạn với SharePoint rồi mới mở file">${icon("file")} Mở file ${icon("ext")}</button>
+    </div>`).join("");
+  const trace = `<ol class="steps">${(r.trace || []).map((s) => {
     const { step, ok, ms, ...rest } = s;
     const d = Object.entries(rest).filter(([, v]) => v !== null && v !== "" && !(Array.isArray(v) && !v.length)).map(([k, v]) => `${k}: ${typeof v === "object" ? JSON.stringify(v) : v}`).join(" · ");
     return `<li><span class="s-dot ${ok ? "" : "bad"}">${ok ? "✓" : "✕"}</span><span>${esc(step)}</span><span class="muted small">${ms} ms</span>${d ? `<span class="s-d">${esc(d)}</span>` : ""}</li>`;
-  }).join("")}</ol></details>`;
-  if (r.sensitive) return `${head}<div class="sensitive">${icon("users")}<div><b>${esc(r.message)}</b></div></div>`;
-  if (r.out_of_scope) return `${head}<div class="sensitive scope">${icon("lock")}<div><b>${esc(r.message)}</b></div></div>`;
-  if (r.refused) return `${head}<div class="refused">${icon("info")}<div>${esc(r.message)}</div></div>${trace}`;
-  if (r.pending_review) return `${head}<div class="pending"><span class="spinner"></span><div><b>${esc(r.message)}</b>
-      <div class="chips" style="margin-top:6px">${(r.topics || []).map((t) => `<span class="chip warn">${esc(t)}</span>`).join("")}</div>
-      <div class="muted small">Mã bản nháp #${r.draft_id} · trang này tự cập nhật khi có kết quả duyệt</div></div></div>${trace}`;
-  const claims = `<ol class="claims">${r.claims.map((c) => `<li>${esc(c.text)}${c.refs.map((n) => `<button class="ref" data-n="${n}" aria-label="Xem trích dẫn ${n}">${n}</button>`).join("")}
-    ${(c.ocr_doubt || []).length ? `<span class="chip warn" title="Bộ đọc OCR thứ hai không đọc ra đúng con số này — hãy đối chiếu ảnh gốc bên dưới">số từ bản scan chưa xác nhận: ${esc(c.ocr_doubt.join(", "))}</span>`
-      : c.uncertain ? `<span class="chip warn" title="Điểm NLI thấp">chưa chắc</span>` : ""}</li>`).join("")}</ol>`;
-  const cites = `<div class="cites">${r.citations.map((c) => `<div class="cite" id="cite-${i}-${c.n}">
-      <div class="cite-top"><span class="cite-n">${c.n}</span>${ftype((c.name.split(".").pop() || "").toLowerCase())}<span class="cite-name" title="${esc(c.name)}">${esc(c.name)}</span></div>
-      <div class="cite-loc">${esc(c.locator)}</div>
-      <blockquote>${esc(c.quote)}</blockquote>
-      ${c.crop ? `<figure class="crop"><img loading="lazy" alt="Vùng tương ứng trên bản scan gốc" src="/crop/${encodeURIComponent(c.item_id)}?ticket=${encodeURIComponent(c.crop.ticket || "")}&page=${encodeURIComponent(c.crop.page)}${c.crop.box ? "&box=" + c.crop.box.join(",") : ""}"><figcaption>${c.crop.box ? "Vùng gốc trên bản scan (đã nắn thẳng)" : "Trang scan gốc (đã nắn thẳng)"}</figcaption></figure>` : ""}
-      <div class="cite-foot"><span class="chip">${esc(SITE_LABEL[c.site_id] || c.site_id)}</span>${c.ocr ? '<span class="chip info" title="PaddleOCR-VL">văn bản nhận dạng từ bản scan</span>' : ""}
-        <span style="flex:1"></span><button class="linkbtn" data-open="${esc(c.item_id)}" title="Hệ thống kiểm tra quyền của tài khoản bạn rồi mới mở file">${icon("file")} Mở file ${icon("ext")}</button></div>
-    </div>`).join("")}</div>`;
-  return head + claims + cites + trace;
+  }).join("")}</ol>`;
+  p.innerHTML = tabs + `<div class="pn-body">${tab === "src" ? src : trace}</div>`;
+  $("#shell").classList.add("panel-open");
+  $("#pn-close").onclick = closePanel;
+  $$(".pn-tabs [data-tab]", p).forEach((b) => b.onclick = () => openPanel(i, b.dataset.tab, n));
+  $$(".crop img", p).forEach((im) => { im.onclick = () => im.parentElement.classList.toggle("big"); im.onerror = () => im.parentElement.remove(); });
+  if (tab === "src" && n) { const el = $("#pn-" + n); if (el) el.scrollIntoView({ block: "start", behavior: "smooth" }); }
+}
+
+function answerText(r) {
+  const body = r.claims.map((c) => (r.claims.length > 1 ? "• " : "") + c.text + c.refs.map((n) => ` [${n}]`).join("")).join("\n");
+  const src = r.citations.map((c) => `[${c.n}] ${c.name} — ${c.locator}`).join("\n");
+  return body + (src ? "\n\nNguồn:\n" + src : "");
 }
 
 function wireAnswer(el, i) {
+  if (!el) return;
+  const m = typeof i === "number" ? CHAT[i] : null;
   $$("[data-fb]", el).forEach((b) => b.onclick = async () => {
-    const m = CHAT[i]; if (!m || !m.r || m.fb) return;
+    if (!m || !m.r || m.fb) return;
     const note = b.dataset.fb === "down" ? (prompt("Câu trả lời sai ở đâu? (không bắt buộc)") || "") : "";
     try { await post("/api/feedback", { audit_seq: m.r.audit_seq, rating: b.dataset.fb, note }); m.fb = b.dataset.fb;
       $$("[data-fb]", el).forEach((x) => x.classList.toggle("on", x.dataset.fb === m.fb)); toast("Cảm ơn phản hồi của bạn"); }
     catch (e) { toast(e.message, "bad"); }
   });
-  $$(".crop img", el).forEach((im) => {
-    im.onclick = () => im.parentElement.classList.toggle("big");
-    im.onerror = () => im.parentElement.remove();   // no permission or page gone: hide quietly
+  $$("[data-copy]", el).forEach((b) => b.onclick = async () => {
+    try { await navigator.clipboard.writeText(answerText(m.r)); b.innerHTML = icon("check"); setTimeout(() => { b.innerHTML = icon("copy"); }, 1400); }
+    catch { toast("Không sao chép được", "bad"); }
   });
-  $$(".ref", el).forEach((b) => b.onclick = () => {
-    const c = $(`#cite-${i}-${b.dataset.n}`); if (!c) return;
-    c.scrollIntoView({ behavior: "smooth", block: "center" }); c.classList.add("flash"); setTimeout(() => c.classList.remove("flash"), 1400);
-  });
+  $$(".ref, .src", el).forEach((b) => b.onclick = () => openPanel(i, "src", Number(b.dataset.n)));
+  $$("[data-trace]", el).forEach((b) => b.onclick = () => openPanel(i, "trace"));
+  if (m && m.fresh) setTimeout(() => { m.fresh = false; }, 1200);
 }
 
 async function ask(q) {
   if (!q || CHAT.some((m) => !m.r)) return;
-  const m = { q, done: 0, ms: [], t0: Date.now() }; CHAT.push(m);
-  const input = $("#q"); if (input) { input.value = ""; input.style.height = "auto"; }
-  renderThread();
+  if (!CUR) {                                   // first question opens a conversation
+    const c = { id: "c" + Date.now(), title: q.length > 60 ? q.slice(0, 57) + "…" : q, items: CHAT };
+    CONVS.unshift(c); CUR = c.id; updateRecent();
+    $("#page-title").textContent = c.title;
+  }
+  const m = { q, steps: [], t0: Date.now(), now: "Đang kiểm tra quyền truy cập" }; CHAT.push(m);
+  if (!$("#thread")) pageChat($("#page")); else { const input = $("#q"); if (input) { input.value = ""; input.style.height = "auto"; } renderThread(); }
+  const send = $("#send"); if (send) send.disabled = true;
   const timer = setInterval(() => {      // elapsed-time counter only; the steps come from the server
     const e = $(`#ans-${CHAT.indexOf(m)} [data-elapsed]`); if (e && !m.r) e.textContent = secs(Date.now() - m.t0);
   }, 100);
@@ -547,10 +632,16 @@ async function ask(q) {
     m.r = await postStream("/api/chat/stream", { question: q, scope_site: $("#scope-site")?.value || null },
                            (ev) => onProgress(m, ev));
     m.r.elapsed_ms = Date.now() - m.t0;
+    m.fresh = true;
     if (m.r.pending_review) watchDrafts();
   } catch (e) {
-    m.r = { refused: true, message: "Lỗi: " + e.message, trace: [] };
-  } finally { clearInterval(timer); renderThread(); }
+    m.r = { refused: true, message: "Không gửi được câu hỏi: " + e.message, trace: [] };
+  } finally {
+    clearInterval(timer);
+    if (CHAT.includes(m) && location.hash.startsWith("#/chat")) renderThread();
+    const s2 = $("#send"); if (s2) s2.disabled = false;
+    $("#q")?.focus();
+  }
 }
 
 // ------------------------------------------------------------------ sensitive-question drafts (asker)
