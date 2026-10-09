@@ -27,7 +27,6 @@ from dr.security import guard, pii
 from dr.tenant.service import FakeTenant
 
 NO_ROLE_MESSAGE = "Tài khoản của bạn chưa được cấp quyền sử dụng trợ lý AI trong Data Room."
-MAX_CHUNKS_PER_FILE = 3
 FOCUSED_PASSAGES = 3   # retry size when the model finds nothing although the reranker found a strong match
 RETRY_MIN_RERANK = 0.5
 
