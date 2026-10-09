@@ -34,10 +34,11 @@ DEFAULT_TOPICS = {
                  "terms": ["dinh gia", "valuation", "gia tri doanh nghiep", "enterprise value", "ev/ebitda", "p/e",
                            "company worth", "fair value"]},
     "gia_chao_ban": {"label": "Giá chào bán / khoảng giá",
-                     "terms": ["gia chao ban", "offering price", "offer price", "gia phat hanh", "khoang gia",
-                               "price range"]},
+                     "terms": ["gia chao", "offering price", "offer price", "gia phat hanh", "khoang gia",
+                               "price range", "bang gia", "gia du kien", "gia co phieu du kien", "expected price"]},
     "phan_bo": {"label": "Phân bổ cổ phần",
-                "terms": ["phan bo", "allocation", "allotment", "duoc mua bao nhieu", "uu tien mua"]},
+                "terms": ["phan bo", "allocation", "allotment", "allocated", "allocate", "allotted",
+                          "duoc mua bao nhieu", "uu tien mua"]},
     "cam_ket_loi_nhuan": {"label": "Cam kết lợi nhuận / cổ tức",
                           "terms": ["cam ket loi nhuan", "loi nhuan dam bao", "guaranteed return", "chac chan tang",
                                     "co tuc du kien", "expected dividend", "dividend forecast"]},
@@ -60,6 +61,22 @@ def _topics() -> dict:
 def topics_of(question: str) -> list[str]:
     q = " " + re.sub(r"\s+", " ", unidecode(question).lower()) + " "
     return [tid for tid, t in _topics().items() if any(term in q for term in t["terms"])]
+
+
+# Answer side: a question can dodge the keywords ("bảng giá chào dự kiến…"), the answer cannot hide
+# what it says. Narrower than the question terms so ordinary answers (e.g. "phân bổ theo kết quả dựng
+# sổ" in a room-ratio answer) are not caught.
+ANSWER_TERMS = {
+    "gia_chao_ban": ["khoang gia", "gia chao ban du kien", "gia chao du kien", "price range", "offering price"],
+    "dinh_gia": ["dinh gia", "valuation", "gia tri doanh nghiep", "enterprise value"],
+    "cam_ket_loi_nhuan": ["co tuc du kien", "loi nhuan dam bao", "guaranteed return", "expected dividend"],
+    "du_bao": ["du bao doanh thu", "du bao loi nhuan", "revenue forecast", "profit forecast"],
+}
+
+
+def answer_topics(text: str) -> list[str]:
+    t = " " + re.sub(r"\s+", " ", unidecode(text).lower()) + " "
+    return [tid for tid, terms in ANSWER_TERMS.items() if any(term in t for term in terms)]
 
 
 def topic_labels(ids: list[str]) -> list[str]:

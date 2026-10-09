@@ -164,7 +164,7 @@ def crop_for(page_ref: str | None, quote: str) -> dict | None:
 def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], question: str,
         deps: Deps, scope_site: str | None = None, on_step: Callable | None = None) -> dict:
     trace = Trace(on_step=on_step)
-    question = question.strip()[:1000]
+    question = guard.strip_controls(question).strip()[:1000]
     lang = lang_mod.detect(question)
 
     def refuse(message: str, **kw) -> dict:
@@ -348,6 +348,18 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
         return refuse(UNAVAILABLE_MESSAGE)
     if not kept:
         return nothing_found(extra={"llm_no_answer": raw.get("no_answer"), "dropped": [r for _, r in dropped]})
+
+    # ---- sensitive content in the answer itself (the question may have dodged the keywords)
+    if not is_staff and settings.sensitive_mode == "contact":
+        out_topics = review.answer_topics(" ".join([cl.text for cl in kept] + [c.quote for cl in kept for c in cl.citations]))
+        if out_topics:
+            msg = (f"Nội dung này hơi nhạy cảm, bạn hãy liên hệ trực tiếp {settings.sensitive_contact} để được hỗ trợ."
+                   if lang == "vi" else
+                   f"This topic is sensitive. Please contact {settings.sensitive_contact_en} directly for assistance.")
+            trace.add("Câu trả lời chạm chủ đề nhạy cảm → không phát hành, chuyển người liên hệ", True, topics=out_topics)
+            r = refuse(msg, kind="sensitive_redirect", extra={"topics": out_topics, "answer_side": True})
+            r["sensitive"] = True
+            return r
 
     # ---- answer mode (BR-04): without a summarize-capable role, only verbatim quotes are shown
     held_roles = set(g2.detail.get("roles_mirror", []))
