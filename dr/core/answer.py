@@ -28,7 +28,8 @@ from dr.tenant.service import FakeTenant
 
 NO_ROLE_MESSAGE = "Tài khoản của bạn chưa được cấp quyền sử dụng trợ lý AI trong Data Room."
 MAX_CHUNKS_PER_FILE = 3
-FOCUSED_PASSAGES = 5   # retry size when a small local model finds nothing in a longer passage list
+FOCUSED_PASSAGES = 3   # retry size when the model finds nothing although the reranker found a strong match
+RETRY_MIN_RERANK = 0.5
 
 
 @dataclass
@@ -319,8 +320,10 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
         if not order:
             return out_of_scope()
 
+    top_rerank = None
     if deps.rerank and order and not whole_doc:
         scores = deps.rerank(question, [passages[c]["text"] for c in order])
+        top_rerank = max(scores) if scores else None
         for c, s in zip(order, scores):
             passages[c]["rerank"] = s
         order = [c for _, c in sorted(zip(scores, order), key=lambda x: -x[0])]
@@ -391,8 +394,10 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
     kept, dropped = verify.check(raw.get("claims", []), labels, sel_passages, question)
     trace.add("Kiểm chứng tất định (trích dẫn nguyên văn, con số)", True, kept=len(kept), dropped=len(dropped),
               dropped_reasons=[r for _, r in dropped])
-    if not kept and len(selected) > FOCUSED_PASSAGES and plan.intent == "fact":
-        # Small local models lose facts in long contexts: retry once on the top passages only.
+    if not kept and len(llm_in) > FOCUSED_PASSAGES and plan.intent == "fact" and (
+            top_rerank is None or top_rerank >= RETRY_MIN_RERANK):
+        # The local model sometimes misses a fact that is there (long context, GPU non-determinism):
+        # when the reranker found a strong match, retry once on the top passages only.
         focus = llm_in[:FOCUSED_PASSAGES]
         raw, labels = _call(llm_call, question, focus, lang=lang, style=plan.intent, max_claims=plan.claims)
         kept, dropped2 = verify.check(raw.get("claims", []), labels,
@@ -404,11 +409,15 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
     # (asked for the fee, the lock-up sentence of the same term sheet); drop such claims.
     # Calibrated on the fact set: the reranker alone also dropped right answers (0.003 for a correct
     # fee claim), so a claim is kept when the reranker OR the question's key terms vouch for it.
-    if plan.relevance and deps.rerank and kept and settings.relevance_min > 0:
+    # A question about another investor group is answered from shared documents only when the answer
+    # really addresses it (both signals), otherwise the polite out-of-scope message is better than a
+    # loosely related line ("room" in "Data Room" vs "foreign ownership room").
+    if (plan.relevance or other) and deps.rerank and kept and settings.relevance_min > 0:
         texts = [cl.text + " " + " ".join(c.quote for c in cl.citations) for cl in kept]
         rel = deps.rerank(question, texts)
         ovl = [intent.term_overlap(question, t) for t in texts]
-        ok = [r >= settings.relevance_min or o >= settings.relevance_overlap for r, o in zip(rel, ovl)]
+        ok = [(r >= settings.relevance_min and o >= settings.relevance_overlap) if other else
+              (r >= settings.relevance_min or o >= settings.relevance_overlap) for r, o in zip(rel, ovl)]
         kept = [cl for cl, k in zip(kept, ok) if k]
         trace.add("Kiểm tra đúng trọng tâm câu hỏi", True, dropped=ok.count(False),
                   scores=[round(r, 3) for r in rel], overlap=[round(o, 2) for o in ovl])
@@ -438,7 +447,7 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
     if not is_staff and settings.sensitive_mode == "contact":
         if plan.intent != "fact" and len(kept) > 1:
             # a summary or list keeps its other points; only the sensitive ones are left out
-            per = [review.answer_topics(" ".join([cl.text] + [c.quote for c in cl.citations])) for cl in kept]
+            per = [review.answer_topics(cl.text) for cl in kept]
             if any(per) and not all(per):
                 cut = sorted({t for ts in per for t in ts})
                 kept = [cl for cl, ts in zip(kept, per) if not ts]
@@ -446,7 +455,9 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
                           f"{settings.sensitive_contact}." if lang == "vi" else
                           f"Some sensitive content was left out; for that part, please contact {settings.sensitive_contact_en} directly.")
                 trace.add("Lược bỏ ý chạm chủ đề nhạy cảm", True, topics=cut, removed=sum(1 for ts in per if ts))
-        out_topics = review.answer_topics(" ".join([cl.text for cl in kept] + [c.quote for cl in kept for c in cl.citations]))
+        # what the answer asserts (in full-text mode the claims are the quotes themselves); a quote that
+        # merely sits next to a price in the same sentence does not make a share-count answer sensitive
+        out_topics = review.answer_topics(" ".join(cl.text for cl in kept))
         if out_topics:
             msg = (f"Nội dung này hơi nhạy cảm, bạn hãy liên hệ trực tiếp {settings.sensitive_contact} để được hỗ trợ."
                    if lang == "vi" else

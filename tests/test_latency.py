@@ -46,7 +46,7 @@ def test_cache_hits_only_on_identical_input(monkeypatch):
 
     def fake(*a, **k):
         n["c"] += 1
-        return {"claims": [], "no_answer": True}
+        return {"claims": [{"text": "Nội dung A", "sentences": ["D1.1"]}], "no_answer": False}
     monkeypatch.setattr(llm, "_chat", fake)
     ps = [{"chunk_id": 1, "text": "Nội dung A", "source": "x"}]
     llm.answer_json("Phí thu xếp là bao nhiêu?", ps)
@@ -59,7 +59,12 @@ def test_cache_hits_only_on_identical_input(monkeypatch):
     assert n["c"] == 5
     out, _ = llm.answer_json("Phí thu xếp là bao nhiêu?", ps)
     out["claims"].append("x")                                                  # callers cannot poison the cache
-    assert llm.answer_json("Phí thu xếp là bao nhiêu?", ps)[0]["claims"] == []
+    assert len(llm.answer_json("Phí thu xếp là bao nhiêu?", ps)[0]["claims"]) == 1
+    # "nothing found" is not remembered: the local model is not perfectly repeatable
+    monkeypatch.setattr(llm, "_chat", lambda *a, **k: n.__setitem__("c", n["c"] + 1) or {"claims": [], "no_answer": True})
+    before = n["c"]
+    llm.answer_json("Một câu khác?", ps), llm.answer_json("Một câu khác?", ps)
+    assert n["c"] == before + 2
 
 
 def test_stream_reports_progress_then_same_answer(client):
