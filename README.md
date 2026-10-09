@@ -128,14 +128,18 @@ Bộ dữ liệu tấn công nằm ở `make attack-set`, `scripts/train_guard.p
 - tập huấn luyện: 600 câu;
 - tập thử: 450 câu, có thêm tiếng Trung và tiếng Pháp.
 
-| Tập thử giữ riêng | Kết quả |
+| Tập thử giữ riêng (bản 2026-10-09) | Kết quả |
 |---|---|
-| Phát hiện tấn công (300 câu) | **85,3%** |
-| Chặn nhầm câu hợp lệ (150 câu) | **0,7%**; câu bẫy 0/82 |
-| Theo loại | Ghi đè chỉ dẫn 97%; đòi system prompt 89%; nhập vai 100%; mã hóa 100%; thẻ giả 100%; vượt quyền 82%; trích xuất hàng loạt 71%; ép bịa số / ép khẳng định 43% |
+| Phát hiện tấn công (300 câu) | **87,7%** |
+| Chặn nhầm câu hợp lệ (150 câu) | **2,0%**; câu bẫy 2/82 |
+| Theo loại | Ghi đè chỉ dẫn 95%; đòi system prompt 90%; vượt quyền 95%; trích xuất hàng loạt 84%; nhập vai 84%; thẻ giả 97%; mã hóa 100%; ép bịa số / ép khẳng định 57% |
 | Độ trễ | Dưới 1 ms; câu dài thêm khoảng 0,1 s |
 
-Số đo này lạc quan: điểm vận hành được chọn sau khi đã xem tập thử. Kiểm định chéo trên tập huấn luyện đạt 97%, cho thấy độ rơi khi gặp mẫu câu mới.
+Hai ngưỡng (cả câu và từng câu của câu dài) được chọn bằng kiểm định chéo 5 lần chỉ trên tập huấn luyện, với giới hạn chặn nhầm 3%. Mức 3% được chọn giữa 2%, 3% và 4% sau khi đã xem tập thử, nên số đo hơi lạc quan.
+
+So sánh: mô hình cũ chấm trên cùng tập thử này đạt 86,3% phát hiện và 6,0% chặn nhầm. Con số 85,3% / 0,7% báo trước đây đo trên tập thử cũ, với ngưỡng được chọn ngay trên tập thử đó.
+
+Tập hợp lệ có thêm câu xin trích nguyên văn theo mã tài liệu, câu so sánh giữa các nhóm và câu có thông tin cá nhân của người hỏi; đây là những câu từng bị chặn nhầm trong red-team.
 
 **End-to-end khi tắt hẳn lớp L2** (`attack_eval.py --e2e 30`): 30 câu tấn công với LLM thật, dưới tên nhà đầu tư Nhóm B, **0 rò rỉ**. 25 câu bị lớp sau từ chối. 5 câu được trả lời, nhưng chỉ từ tài liệu được phép và đã kiểm chứng trích dẫn. Lớp L2 là lớp bảo vệ thêm; ranh giới quyền nằm ở RLS và bước kiểm tra trực tiếp.
 
