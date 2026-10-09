@@ -220,13 +220,15 @@ def clear_cache() -> None:
         _cache.clear()
 
 
-def _chat(system: str, prompt: str, schema: dict, timeout: float) -> dict:
+def _chat(system: str, prompt: str, schema: dict, timeout: float, max_tokens: int = 600) -> dict:
+    # num_predict bounds the answer: a constrained-JSON generation that never closes would otherwise
+    # run until the context is full (seen once in 1000 red-team questions: 300 s, then a timeout)
     r = httpx.post(f"{settings.ollama_url}/api/chat", timeout=timeout, json={
         "model": settings.llm_model,
         "stream": False,
         "format": schema,
         "keep_alive": settings.llm_keep_alive,
-        "options": {"temperature": 0, "num_ctx": 8192},
+        "options": {"temperature": 0, "num_ctx": 8192, "num_predict": max_tokens},
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
     })
     r.raise_for_status()
@@ -238,12 +240,12 @@ def _chat(system: str, prompt: str, schema: dict, timeout: float) -> dict:
 
 # ------------------------------------------------------------------ the two calls
 def answer_json(question: str, passages: list[dict], lang: str = "vi", style: str = "fact", max_claims: int = 3,
-                timeout: float = 300) -> tuple[dict, dict[str, int]]:
+                timeout: float = 120) -> tuple[dict, dict[str, int]]:
     system = SYSTEM.replace("{style}", STYLE.get(style, STYLE["fact"]).format(n=max_claims))
 
     def compute():
         prompt, labels, sentences = build_prompt(question, passages, lang)
-        raw = _chat(system, prompt, SCHEMA, timeout)
+        raw = _chat(system, prompt, SCHEMA, timeout, max_tokens=600 if style == "fact" else 1500)
         claims = []
         for c in raw.get("claims") or []:
             if not isinstance(c, dict):
@@ -256,7 +258,7 @@ def answer_json(question: str, passages: list[dict], lang: str = "vi", style: st
     return _memo(f"summary:{style}:{max_claims}", question, passages, lang, compute)
 
 
-def answer_quotes(question: str, passages: list[dict], lang: str = "vi", max_claims: int = 3, timeout: float = 180,
+def answer_quotes(question: str, passages: list[dict], lang: str = "vi", max_claims: int = 3, timeout: float = 90,
                   **_) -> tuple[dict, dict[str, int]]:
     """Same output shape as answer_json; each claim is one verbatim sentence citing itself.
     More than 3 sentences (full-text questions) are shown in reading order."""
@@ -265,7 +267,7 @@ def answer_quotes(question: str, passages: list[dict], lang: str = "vi", max_cla
     def compute():
         prompt, labels, sentences = build_prompt(question, passages, lang)
         raw = _chat(system, prompt.rsplit("\nNgôn ngữ trả lời:", 1)[0] + f"\nCâu hỏi: {question}",
-                    QUOTE_SCHEMA, timeout)
+                    QUOTE_SCHEMA, timeout, max_tokens=200)
         cites = _cite((raw.get("sentences") or [])[:max_claims], sentences)
         # the same clause copied into two documents (or one sentence inside a longer one): show it once
         flat = [re.sub(r"\W+", " ", c["quote"].lower()).strip() for c in cites]

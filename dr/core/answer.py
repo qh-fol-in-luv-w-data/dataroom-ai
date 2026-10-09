@@ -386,7 +386,11 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
     n_sent = settings.max_sentences if plan.intent == "fact" else plan.sentences
     llm_in = focus_sentences(question, llm_in, deps, trace, n=n_sent, keep_order_only=bool(whole_doc))
     trace.stage("llm")
-    raw, labels = _call(llm_call, question, llm_in, lang=lang, style=plan.intent, max_claims=plan.claims)
+    try:
+        raw, labels = _call(llm_call, question, llm_in, lang=lang, style=plan.intent, max_claims=plan.claims)
+    except Exception as e:                       # model timeout or outage: say so, never guess
+        trace.add(f"LLM {settings.llm_model} không phản hồi", False, error=type(e).__name__)
+        return refuse(RETRY_MESSAGE, kind="llm_unavailable")
     trace.add(f"LLM {settings.llm_model} ({'chọn câu nguyên văn theo mã' if llm_call is deps.llm_quotes else 'JSON có ràng buộc'}"
               f" · {plan.intent})", True, raw_claims=len(raw.get("claims", [])), passages=len(llm_in))
 
@@ -399,7 +403,11 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
         # The local model sometimes misses a fact that is there (long context, GPU non-determinism):
         # when the reranker found a strong match, retry once on the top passages only.
         focus = llm_in[:FOCUSED_PASSAGES]
-        raw, labels = _call(llm_call, question, focus, lang=lang, style=plan.intent, max_claims=plan.claims)
+        try:
+            raw, labels = _call(llm_call, question, focus, lang=lang, style=plan.intent, max_claims=plan.claims)
+        except Exception as e:
+            trace.add(f"LLM {settings.llm_model} không phản hồi (lần thử lại)", False, error=type(e).__name__)
+            raw, labels = {"claims": []}, {}
         kept, dropped2 = verify.check(raw.get("claims", []), labels,
                                       {p["chunk_id"]: sel_passages[p["chunk_id"]] for p in focus}, question)
         dropped += dropped2
