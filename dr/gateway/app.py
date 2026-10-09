@@ -276,7 +276,7 @@ async def chat_stream(body: ChatIn, claims: dict = Depends(current)):
                                    body.scope_site, on_step=emit)
             finally:
                 ratelimit.limiter.slots.release()
-            emit({"result": r})
+            emit({"result": _with_crop_tickets(r, claims["oid"])})
         except Exception:
             log.exception("chat stream failed")
             emit({"error": "Hệ thống gặp lỗi khi xử lý câu hỏi, vui lòng thử lại."})
@@ -301,7 +301,7 @@ async def chat(body: ChatIn, claims: dict = Depends(current)):
         with ratelimit.limiter.slots:     # bounded concurrent LLM work across all users
             return answer_mod.ask(S.tenant, S.index, claims["oid"], claims["roles"], body.question, S.deps,
                                   body.scope_site)
-    return await run_in_threadpool(run)
+    return _with_crop_tickets(await run_in_threadpool(run), claims["oid"])
 
 
 # ------------------------------------------------------------------ search, review, feedback (BRD v1.4)
@@ -319,7 +319,11 @@ async def search(q: str = Query(..., max_length=300), site: str | None = None, c
 @app.get("/api/my/drafts")
 def my_drafts(claims: dict = Depends(current)):
     from dr.core import review
-    return review.my_drafts(S.tenant, claims["oid"])
+    out = review.my_drafts(S.tenant, claims["oid"])
+    for d in out:
+        if d.get("answer"):
+            _with_crop_tickets(d["answer"], claims["oid"])
+    return out
 
 
 def reviewer_only(claims: dict = Depends(current)) -> dict:
@@ -338,7 +342,11 @@ def review_queue(status: str = "pending", claims: dict = Depends(reviewer_only))
     from dr.core import review
     if status not in ("pending", "approved", "rejected"):
         raise HTTPException(400, "status không hợp lệ")
-    return review.queue(S.tenant, claims["oid"], status)
+    out = review.queue(S.tenant, claims["oid"], status)
+    for d in out:
+        if d.get("answer"):
+            _with_crop_tickets(d["answer"], claims["oid"])
+    return out
 
 
 class DecisionIn(BaseModel):
@@ -514,15 +522,59 @@ def audit_verify(_: dict = Depends(admin_only)):
     return audit.verify()
 
 
+class FileLink(BaseModel):
+    url: str
+    sharepoint_url: str | None = None
+
+
+@app.post("/api/files/{item_id}/link")
+async def file_link(item_id: str, claims: dict = Depends(current)) -> FileLink:
+    """A link to a cited file, only for an account that can open it right now.
+
+    The backend asks SharePoint *as the signed-in user* (Microsoft 365: on-behalf-of the user's
+    SSO token, so the identity is the account's own Entra login) and hands out a link only on
+    200. Microsoft 365: the file's own webUrl; SharePoint checks the same SSO account again
+    when it opens, so a forwarded link opens nothing for anyone else. No anonymous or
+    organisation-wide sharing link is ever created. Demo: a single-use ticket to the viewer."""
+    oid = claims["oid"]
+    if claims.get("admin"):
+        raise HTTPException(400, "Hãy chọn một danh tính người dùng")
+
+    def check():
+        try:
+            return S.tenant.get_item_as_user(oid, item_id)[0]
+        except Exception:
+            return 503
+    status = await run_in_threadpool(check)
+    audit.append(oid, "file_link", {"item_id": item_id, "granted": status == 200, "status": status})
+    if status == 503:
+        raise HTTPException(503, "Chưa kiểm tra được quyền với SharePoint, vui lòng thử lại sau ít phút")
+    if status != 200:
+        raise HTTPException(403, "Tài liệu này nằm ngoài phạm vi được chia sẻ với Quý vị")
+    web = getattr(S.tenant, "web_url", lambda _: None)(item_id)
+    if settings.tenant_mode == "m365":
+        if not web:
+            raise HTTPException(404, "Không có đường dẫn SharePoint cho tài liệu này")
+        return FileLink(url=web)
+    return FileLink(url=f"/open/{item_id}?ticket={auth.issue_ticket(oid, item_id, 'open')}", sharepoint_url=web)
+
+
+def _with_crop_tickets(result: dict, oid: str) -> dict:
+    """Page-image crops inside an answer get their own short-lived tickets (never the session token)."""
+    for c in result.get("citations", []) if isinstance(result, dict) else []:
+        if c.get("crop"):
+            c["crop"]["ticket"] = auth.issue_ticket(oid, c["item_id"], "crop", ttl=1800)
+    return result
+
+
 @app.get("/open/{item_id}")
-def open_file(item_id: str, t: str = Query(...)):
-    """'SharePoint viewer': SharePoint itself decides at open time. With Microsoft 365 the
-    citation links straight to the file's webUrl, so this demo viewer does not exist."""
+def open_file(item_id: str, ticket: str = Query(...)):
+    """Demo 'SharePoint viewer'. With Microsoft 365 the link is the file's webUrl instead."""
     if settings.tenant_mode == "m365":
         raise HTTPException(404, "Mở tài liệu trực tiếp trên SharePoint")
-    claims = auth.verify(t)
+    claims = auth.verify_ticket(ticket, item_id, "open")
     if not claims:
-        raise HTTPException(401, "Phiên không hợp lệ")
+        raise HTTPException(401, "Liên kết đã hết hạn hoặc đã được dùng, hãy bấm Mở file lại")
     if claims["oid"] == auth.ADMIN_OID or not S.tenant.sp_can_read(claims["oid"], item_id):
         raise HTTPException(403, "SharePoint: bạn không có quyền mở tài liệu này")
     p: Path = S.tenant.file_path(item_id)
@@ -535,15 +587,15 @@ def open_file(item_id: str, t: str = Query(...)):
 
 
 @app.get("/crop/{item_id}")
-def crop(item_id: str, t: str = Query(...), page: str = Query(...), box: str | None = None):
+def crop(item_id: str, ticket: str = Query(...), page: str = Query(...), box: str | None = None):
     """Region of a cleaned scan page, for checking an OCR'd quote against the original.
     Same rule as /open: SharePoint (sp_can_read) decides, and the page must belong to a
     current chunk of this very item."""
     if settings.tenant_mode == "m365":    # production renders crops in memory from SharePoint (plan §4.4)
         raise HTTPException(404, "Không có ảnh trang")
-    claims = auth.verify(t)
+    claims = auth.verify_ticket(ticket, item_id, "crop")
     if not claims:
-        raise HTTPException(401, "Phiên không hợp lệ")
+        raise HTTPException(401, "Liên kết ảnh đã hết hạn")
     if claims["oid"] == auth.ADMIN_OID or not S.tenant.sp_can_read(claims["oid"], item_id):
         raise HTTPException(403, "SharePoint: bạn không có quyền mở tài liệu này")
     with pg.admin() as c:

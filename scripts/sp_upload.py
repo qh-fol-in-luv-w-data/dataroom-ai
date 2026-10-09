@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -160,12 +161,12 @@ def main(argv=None, http: httpx.Client | None = None) -> int:
     ap.add_argument("--site", help="https://<tenant>.sharepoint.com/sites/<site>")
     ap.add_argument("--list-sites", action="store_true", help="sign in and list the sites you can use")
     ap.add_argument("--library", help="upload into this document library (created if missing) instead of the default one")
-    ap.add_argument("--share", choices=["anyone", "organization"],
-                    help="after upload: view-only sharing link for each folder named in --folders")
-    ap.add_argument("--folders", default="COMMON",
-                    help="comma-separated top-level folders to share (default COMMON only; never the group "
-                         "or internal folders unless you name them — a link opens everything below it)")
-    ap.add_argument("--days", type=int, default=30, help="sharing link lifetime (anyone links)")
+    ap.add_argument("--links", action="store_true",
+                    help="list every sharing link on the site's libraries (folders and files)")
+    ap.add_argument("--revoke-links", action="store_true",
+                    help="delete anonymous ('Anyone') and organisation-wide links found by --links "
+                         "(specific-people links and normal permissions are kept); needs --yes")
+    ap.add_argument("--yes", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args(argv)
     if a.list_sites:
@@ -184,6 +185,15 @@ def main(argv=None, http: httpx.Client | None = None) -> int:
         return 0
     if not a.site:
         ap.error("--site is required (or use --list-sites)")
+    if a.links or a.revoke_links:
+        if a.revoke_links and not a.yes:
+            ap.error("--revoke-links deletes sharing links on the real tenant: add --yes")
+        http = http or httpx.Client(timeout=60, follow_redirects=True)
+        g = Graph(DeviceLogin(a.tenant, a.client_id, http).token, http)
+        found = sharing_links(g, a.site, revoke=a.revoke_links, library=a.library)
+        if a.revoke_links and SHARES.exists():
+            SHARES.unlink()                      # the local copy of the (now dead) public URLs
+        return 0 if not a.revoke_links or all(f["revoked"] for f in found if f["broad"]) else 1
     t = json.loads((TEN / "tenant.json").read_text(encoding="utf-8"))
     items = [i for i in t["items"] if not i.get("malware") and not i.get("encrypted")]
     skipped = [i["name"] for i in t["items"] if i.get("malware") or i.get("encrypted")]
@@ -217,39 +227,53 @@ def main(argv=None, http: httpx.Client | None = None) -> int:
             print(f"  {n}/{len(items)}", flush=True)
     LINKS.write_text(json.dumps(links, ensure_ascii=False, indent=1))
     print(f"Xong: tải mới {done}, tổng {len(links)} file có link SharePoint → {LINKS}")
-    if a.share:
-        share(g, drive_id, prefix, a.share, a.days, [x.strip() for x in a.folders.split(',') if x.strip()])
     return 0
 
 
-NOTICE = """DỮ LIỆU GIẢ LẬP – CHỈ DÙNG ĐỂ DEMO
-==================================
-Toàn bộ tài liệu trong thư viện này do máy sinh ra cho bản demo "AI core cho Data Room IPO".
-"CTCP Năng lượng Sao Mai" là công ty HƯ CẤU. Mọi giấy phép, hợp đồng, hóa đơn, mã số thuế,
-số tài khoản, số liệu tài chính và tên người đều là GIẢ, không có giá trị pháp lý hay giao dịch.
-Không dùng cho bất kỳ quyết định đầu tư nào.
-"""
+SHARES = TEN / "sharepoint_share_links.json"
 
 
-def share(g: Graph, drive_id: str, prefix: str, scope: str, days: int, only: list[str]) -> dict:
-    """View-only links for the named top-level folders (+ the notice file). A folder link opens that
-    folder and everything below it, nothing above or beside it."""
-    upload(g, drive_id, f"{prefix}00-DU-LIEU-GIA-LAP.txt", NOTICE.encode("utf-8"))
-    base = f"drives/{drive_id}/root" + (f":/{quote(prefix.rstrip('/'))}:" if prefix else "")
-    folders = [x for x in g.pages(f"{base}/children")
-               if ("folder" in x and x["name"] in only) or x["name"].startswith("00-")]
-    body = {"type": "view", "scope": "anonymous" if scope == "anyone" else "organization"}
-    if scope == "anyone":
-        body["expirationDateTime"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + days * 86400))
-    out = {}
-    for f in sorted(folders, key=lambda x: x["name"]):
-        r = g.request("POST", f"drives/{drive_id}/items/{f['id']}/createLink", json=body)
-        if r.status_code not in (200, 201):
-            raise GraphError(r.status_code, r.text, f"createLink {f['name']}")
-        out[f["name"]] = r.json()["link"]["webUrl"]
-        print(f"  {f['name']:<24} {out[f['name']]}")
-    (TEN / "sharepoint_share_links.json").write_text(json.dumps(
-        {"scope": scope, "expires_days": days if scope == "anyone" else None, "links": out}, ensure_ascii=False, indent=1))
+def sharing_links(g: Graph, site_url: str, revoke: bool = False, library: str | None = None) -> list[dict]:
+    """Every sharing link on every document library of the site, folders and files alike.
+    'Broad' links (anonymous = anyone with the URL, organization = anyone in the tenant) are the
+    ones a Data Room must not have: access has to come from the account's own permissions, checked
+    by SharePoint at sign-in. With revoke=True those are deleted; specific-people links are kept.
+    Link URLs are never printed (an anonymous URL is itself the key)."""
+    host, path = re.match(r"https://([^/]+)(/sites/[^/?#]+)", site_url).groups()
+    site_id = g.request("GET", f"sites/{host}:{path}").json()["id"]
+    out = []
+    seen: set[str] = set()
+    for d in g.pages(f"sites/{site_id}/drives"):
+        if library and d["name"] != library:
+            continue
+        stack = [("root", "", True)]
+        while stack:
+            ref, rel, is_folder = stack.pop()
+            item_path = f"drives/{d['id']}/items/{ref}" if ref != "root" else f"drives/{d['id']}/root"
+            r = g.request("GET", f"{item_path}/permissions")
+            perms = r.json().get("value", []) if r.status_code == 200 else []
+            for pm in perms:
+                link = pm.get("link")
+                key = pm.get("shareId") or link.get("webUrl") or pm["id"]
+                if not link or pm.get("inheritedFrom") or key in seen:
+                    continue                     # a child shows its parent's link too: count it once
+                seen.add(key)                    # (parents are visited first: the highest folder is kept)
+                scope = link.get("scope")
+                rec = {"library": d["name"], "path": rel or "/", "scope": scope, "type": link.get("type"),
+                       "expires": pm.get("expirationDateTime"), "broad": scope in ("anonymous", "organization"),
+                       "revoked": False}
+                if revoke and rec["broad"]:
+                    rr = g.request("DELETE", f"{item_path}/permissions/{pm['id']}")
+                    rec["revoked"] = rr.status_code in (200, 204)
+                out.append(rec)
+                print(f"  {'THU HỒI ' if rec['revoked'] else ''}{rec['library']}/{rec['path']}  scope={scope} "
+                      f"type={rec['type']} hết hạn={rec['expires'] or 'không'}", flush=True)
+            if is_folder:
+                for ch in g.pages(f"{item_path}/children"):
+                    stack.append((ch["id"], f"{rel}/{ch['name']}".lstrip("/"), "folder" in ch))
+    broad = [f for f in out if f["broad"]]
+    print(f"\n{len(out)} link chia sẻ, {len(broad)} link rộng (anyone/organization)"
+          + (f", đã thu hồi {sum(f['revoked'] for f in broad)}" if revoke else ""))
     return out
 
 

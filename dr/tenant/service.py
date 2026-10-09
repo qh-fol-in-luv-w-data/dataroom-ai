@@ -82,13 +82,9 @@ class FakeTenant:
                 it.setdefault("unique", False)
                 it.setdefault("pending_versions", [])
                 self.items[it["id"]] = it
-            # Real SharePoint copies uploaded by scripts/sp_upload.py: citations open them directly.
+            # Real SharePoint copies uploaded by scripts/sp_upload.py (opened via POST /api/files/{id}/link).
             links = self.dir / "sharepoint_links.json"
             self.links = json.loads(links.read_text(encoding="utf-8")) if links.exists() else {}
-            # Public (view-only) sharing links the library owner created, one per top-level folder.
-            shares = self.dir / "sharepoint_share_links.json"
-            self.share_links = (json.loads(shares.read_text(encoding="utf-8")).get("links", {})
-                                if shares.exists() else {})
             # SharePoint's view of group membership lags behind Entra.
             self._membership_changes: list[tuple[float, str, str, str]] = []  # (t, op, group, oid)
             self.entra_events: list[Event] = []
@@ -191,15 +187,6 @@ class FakeTenant:
     def web_url(self, item_id: str) -> str | None:
         """Link to the real SharePoint copy of this file, if it was uploaded (sp_upload.py)."""
         return (self.links.get(item_id) or {}).get("web_url")
-
-    def public_url(self, item_id: str) -> dict | None:
-        """The folder's public view link and the file's path inside it (anyone can open it)."""
-        it = self.items.get(item_id)
-        url = it and self.share_links.get(it["site"])
-        if not url:
-            return None
-        inner = "/".join(x for x in (it["path"].strip("/"), it["name"]) if x)
-        return {"folder": it["site"], "url": url, "path": inner}
 
     def download(self, item_id: str) -> bytes:
         return self.file_path(item_id).read_bytes()

@@ -41,6 +41,14 @@ class Settings:
     # Only the sentences of those passages that the reranker scores highest are sent (prompt reading
     # is the slow half); 0 = send whole passages.
     max_sentences: int = int(_env("DR_MAX_SENTENCES", "14"))
+    # How the answer style is chosen: "prompt" = from the question (fact / summary / compare / list /
+    # full text, dr/core/intent.py); "role" = BRD v1.4 BR-04 (no Investor.AI.Summarize -> quotes only).
+    answer_mode: str = _env("DR_ANSWER_MODE", "prompt")
+    # Short answers: a claim is dropped when its reranker relevance to the question is below
+    # relevance_min AND it shares fewer than relevance_overlap of the question's key terms
+    # (calibrated: keeps 45/46 right answers, drops 453/460 off-topic ones and both real cases).
+    relevance_min: float = float(_env("DR_RELEVANCE_MIN", "0.1"))
+    relevance_overlap: float = float(_env("DR_RELEVANCE_OVERLAP", "0.6"))
     llm_keep_alive: str = _env("DR_LLM_KEEP_ALIVE", "24h")    # keep the model loaded (Ollama unloads after 5 min)
     answer_cache: int = int(_env("DR_ANSWER_CACHE", "2000"))  # LLM outputs memoised by exact input; 0 = off
     input_guard: bool = _env("DR_INPUT_GUARD", "1") == "1"   # layer 2: normalisation + injection rules + classifier

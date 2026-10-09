@@ -41,3 +41,42 @@ def verify(token: str | None) -> dict | None:
     if claims["exp"] < time.time():
         return None
     return claims
+
+
+# ------------------------------------------------------------------ file tickets
+# A link to a file must never carry the session token (URLs end up in history, logs and
+# forwarded messages). The backend checks the user's access first and then hands out a
+# ticket bound to that user, that file and a purpose, valid for a short time. "open" tickets
+# are single-use; "crop" tickets (page images inside an answer) may be reused until expiry.
+_used: dict[str, float] = {}
+
+
+def issue_ticket(oid: str, item_id: str, purpose: str, ttl: int = 120) -> str:
+    body = json.dumps({"k": "ticket", "oid": oid, "item": item_id, "p": purpose, "exp": int(time.time()) + ttl,
+                       "n": base64.urlsafe_b64encode(hashlib.sha256(f"{time.time_ns()}{oid}".encode()).digest()[:9]).decode()},
+                      separators=(",", ":")).encode()
+    return base64.urlsafe_b64encode(body).decode().rstrip("=") + "." + _sign(b"ticket|" + body)
+
+
+def verify_ticket(ticket: str | None, item_id: str, purpose: str) -> dict | None:
+    if not ticket or "." not in ticket:
+        return None
+    b64, sig = ticket.rsplit(".", 1)
+    try:
+        body = base64.urlsafe_b64decode(b64 + "=" * (-len(b64) % 4))
+        claims = json.loads(body)
+    except Exception:
+        return None
+    if not hmac.compare_digest(_sign(b"ticket|" + body), sig):
+        return None
+    now = time.time()
+    if claims.get("k") != "ticket" or claims["item"] != item_id or claims["p"] != purpose or claims["exp"] < now:
+        return None
+    if purpose == "open":
+        for n, exp in list(_used.items()):
+            if exp < now:
+                _used.pop(n, None)
+        if claims["n"] in _used:
+            return None
+        _used[claims["n"]] = claims["exp"]
+    return claims
