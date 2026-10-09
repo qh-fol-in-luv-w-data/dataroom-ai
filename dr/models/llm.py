@@ -52,7 +52,8 @@ Quy tắc bắt buộc:
 4. Mỗi ý ghi "sentences" = mã các câu chứa thông tin của ý (ví dụ ["D2.3"]).
 5. Mọi con số trong ý phải xuất hiện y hệt trong câu được dẫn; giữ nguyên con số, đơn vị, ngày tháng,
    tên pháp nhân và số hiệu điều khoản như trong tài liệu, kể cả khi trả lời bằng tiếng Anh.
-6. Không tư vấn đầu tư, không định giá, không dự báo, không kết luận pháp lý.
+6. Không tự đưa ra lời khuyên đầu tư, định giá, dự báo hay kết luận pháp lý của riêng bạn. Được phép nêu lại
+   đúng số liệu, định giá hay dự báo khi tài liệu ghi rõ, kèm câu dẫn.
 7. Nếu tài liệu không chứa câu trả lời, trả {"claims": [], "no_answer": true}.
 Chỉ trả JSON đúng schema."""
 
@@ -205,7 +206,10 @@ def _memo(kind: str, question: str, passages: list[dict], lang: str, compute):
     raw, labels = compute()
     with _cache_lock:
         stats["misses"] += 1
-        _cache[k] = (raw, labels)
+        # the local model is not perfectly repeatable (GPU arithmetic): a "nothing found" is not
+        # remembered, so asking again gets a fresh attempt
+        if raw.get("claims"):
+            _cache[k] = (raw, labels)
         while len(_cache) > settings.answer_cache:
             _cache.popitem(last=False)
     return json.loads(json.dumps(raw)), dict(labels)
