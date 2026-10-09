@@ -303,11 +303,16 @@ sự thật từ SharePoint (giả lập) chứ không tin hệ thống đang đ
 | So sánh nhiều nhóm | 40 |
 | Đổi quyền giữa chừng: rút khỏi nhóm, gắn nhãn Excluded, khóa tài khoản, gỡ vai trò (token cũ), nguồn quyền trễ | 30 |
 
-Kết quả lần chạy cuối (2026-10-09):
-- **Bảo mật: 0/1000 câu có lỗ hổng.** 5/5 kịch bản đổi quyền chặn đúng.
+Kết quả lần chạy cuối (2026-10-09, sau khi huấn luyện lại lớp chặn):
+- **Bảo mật: 0/1000 câu có lỗ hổng, 0 lỗi kỹ thuật.** 5/5 kịch bản đổi quyền chặn đúng.
 - **Câu nhạy cảm:** 60/60 chuyển liên hệ.
-- **Chặn tấn công:** 130/150. 2 câu tấn công lọt lớp chặn nhưng câu trả lời vô hại; bộ kiểm không thấy gì vượt quyền.
-- **Lỗi kỹ thuật:** 1 câu model chạy quá giờ. Đã sửa: giới hạn số token sinh ra, và khi model không phản hồi thì trả lời "thử lại sau" thay vì lỗi.
+- **Chặn tấn công:** 132/150. 2 câu tấn công lọt lớp chặn nhưng câu trả lời vô hại; bộ kiểm không thấy gì vượt quyền.
+- **Chặn nhầm câu bình thường:** 1/60.
+- **So với trước khi huấn luyện lại:**
+  - câu hỏi theo mã tài liệu: chặn nhầm 45 → 0, được trả lời 13 → 41;
+  - câu so sánh nhóm bị chặn: 12 → 4;
+  - câu có thông tin cá nhân bị chặn: 10 → 5.
+- **Lượt trước:** có 1 câu model chạy quá giờ. Đã sửa bằng cách giới hạn số token sinh ra, và khi model không phản hồi thì trả lời "thử lại sau" thay vì báo lỗi.
 
 Lần chạy đầu tìm ra và đã sửa:
 - crash khi câu hỏi có ký tự NUL;
@@ -318,7 +323,10 @@ Lần chạy đầu tìm ra và đã sửa:
 
 Giới hạn đã biết:
 - **Câu hỏi tiếng Anh với model 7B: khoảng 60%.** Đã thử dịch câu hỏi sang tiếng Việt trước khi tìm: kết quả không tốt hơn (11/20), có bản dịch lẫn chữ Trung/Hàn, và còn sinh câu trả lời sai mà tự tin. Vì vậy đã gỡ bước dịch. Cần thử lại với model lớn hơn trên GPU.
-- **Lớp chặn tấn công chặn nhầm** một số câu so sánh nhiều nhóm và câu "trích nguyên văn đoạn chứa mã…". Cần bổ sung mẫu câu hợp lệ loại này rồi huấn luyện lại bộ phân loại.
+- **Lớp chặn tấn công** đã được huấn luyện lại. Các ngưỡng chọn bằng 5-fold CV chỉ trên tập train; ngưỡng của mô hình cũ từng được chọn trên tập test nên con số 85,3% / 0,7% báo trước đây là lạc quan.
+  - Trên cùng tập test mới: mô hình cũ bắt 86,3% câu tấn công, chặn nhầm 6,0%; mô hình mới bắt 87,7%, chặn nhầm 2,0%.
+  - Mức chặn nhầm 3% trên train được chọn giữa 3 mức sau khi đã xem kết quả test, nên số đo hơi lạc quan.
+  - Còn bị chặn: câu nhờ gửi thông tin qua email, và câu "liệt kê điều khoản của từng nhóm A, B, C" (gần với kiểu moi dữ liệu hàng loạt).
 
 ## Giới hạn so với production
 
