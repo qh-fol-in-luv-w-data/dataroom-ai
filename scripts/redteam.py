@@ -440,6 +440,10 @@ def run(limit: int | None) -> None:
         conn.poll_once()
     stop.set()
     conn.full_resync()                                   # mirror back to the tenant's original state
+    # A file excluded from AI loses its chunks; once its label is restored it must be ingested again,
+    # otherwise the demo database is left without it (found after run 1: two fee documents).
+    from dr.ingest import pipeline
+    pipeline.ingest_pending(tenant)
     print(f"xong {len(todo)} câu trong {(time.time() - t_start) / 60:.1f} phút")
 
 

@@ -79,6 +79,26 @@ Nếu không câu nào trả lời được câu hỏi, trả {"sentences": [], 
 Chỉ trả JSON đúng schema."""
 
 _SENT = re.compile(r"(?<=[.!?])\s+(?=[\"“(\-–•\w])|\n+")
+_ITEM = re.compile(r"^\s*([•\-–*#|]|\d+[.)]\s|[a-z]\)\s)")
+
+
+def _unwrap(text: str) -> str:
+    """PDF and OCR text breaks lines inside sentences ("…giao dịch trên\nHOSE."). A line break
+    is kept only where it ends something: punctuation, a short heading, a list item or table row."""
+    lines = [ln.strip() for ln in text.split("\n")]
+    out: list[str] = []
+    for ln in lines:
+        if not ln:
+            if out and out[-1] != "":
+                out.append("")
+            continue
+        prev = out[-1] if out else ""
+        if prev and not re.search(r"[.!?:;…]$", prev) and len(prev) >= 60 and "|" not in prev and "|" not in ln \
+                and not _ITEM.match(ln):
+            out[-1] = f"{prev} {ln}"
+        else:
+            out.append(ln)
+    return "\n".join(x for x in out if x)
 _ID = re.compile(r"D\d+\.\d+")
 _ID_REF = re.compile(r"\[?\bD\d+\.\d+\b\]?")
 
@@ -88,7 +108,7 @@ def split_sentences(text: str, min_len: int = 25) -> list[str]:
     Number separators (1.250,5 / 0,85%) never split: a split needs whitespace after the mark."""
     out: list[str] = []
     buf = ""
-    for part in _SENT.split(text):
+    for part in _SENT.split(_unwrap(text)):
         part = (part or "").strip()
         if not part:
             continue
@@ -134,6 +154,28 @@ def _cite(ids, sentences: dict[str, str]) -> list[dict]:
             seen.add(m.group(0))
             out.append({"doc": m.group(0).split(".")[0], "quote": sentences[m.group(0)]})
     return out
+
+
+def _repair(claim: dict, sentences: dict[str, str]) -> dict:
+    """A small model sometimes writes the right figure but cites the sentence next to it. When the
+    claim's numbers are missing from its cited sentences, add the one given sentence that holds all
+    of them (same document first). Deterministic, and only sentences the user was given, so the
+    verifier's rule (every number in the claim appears in its quotes) still decides."""
+    from dr.core.verify import vn_numbers
+    need = vn_numbers(claim["text"])
+    if not need:
+        return claim
+    have = set().union(*[v for c in claim["citations"] for v in vn_numbers(c["quote"])] or [set()])
+    missing = [v for v in need if not (v & have)]
+    if not missing:
+        return claim
+    docs = {c["doc"] for c in claim["citations"]}
+    cands = [(sid, s) for sid, s in sentences.items()
+             if all(any(v & n for n in vn_numbers(s)) for v in missing)]
+    if not cands:
+        return claim
+    sid, sent = sorted(cands, key=lambda x: (x[0].split(".")[0] not in docs, len(x[1])))[0]
+    return {**claim, "citations": claim["citations"] + [{"doc": sid.split(".")[0], "quote": sent}], "repaired": True}
 
 
 # ------------------------------------------------------------------ memo
@@ -205,7 +247,7 @@ def answer_json(question: str, passages: list[dict], lang: str = "vi", style: st
             # sentence ids belong in "sentences", not in the text; a claim that is only ids is dropped
             text = re.sub(r"\s{2,}", " ", _ID_REF.sub("", c.get("text") or "")).strip(" ,;")
             if text:
-                claims.append({"text": text, "citations": _cite(c.get("sentences"), sentences)})
+                claims.append(_repair({"text": text, "citations": _cite(c.get("sentences"), sentences)}, sentences))
         return {"claims": claims[:max_claims], "no_answer": bool(raw.get("no_answer")) and not claims}, labels
     return _memo(f"summary:{style}:{max_claims}", question, passages, lang, compute)
 
@@ -221,6 +263,10 @@ def answer_quotes(question: str, passages: list[dict], lang: str = "vi", max_cla
         raw = _chat(system, prompt.rsplit("\nNgôn ngữ trả lời:", 1)[0] + f"\nCâu hỏi: {question}",
                     QUOTE_SCHEMA, timeout)
         cites = _cite((raw.get("sentences") or [])[:max_claims], sentences)
+        # the same clause copied into two documents (or one sentence inside a longer one): show it once
+        flat = [re.sub(r"\W+", " ", c["quote"].lower()).strip() for c in cites]
+        cites = [c for k, c in enumerate(cites)
+                 if not any(k != o and flat[k] in flat[o] and (flat[k] != flat[o] or o < k) for o in range(len(cites)))]
         if max_claims > 3:
             order = list(sentences)
             cites.sort(key=lambda c: order.index(next(k for k, v in sentences.items() if v == c["quote"])))

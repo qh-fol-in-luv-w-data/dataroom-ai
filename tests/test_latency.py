@@ -93,3 +93,12 @@ def test_model_memo_returns_copies():
     f("q", ["p2"]), f("z", [])            # evicts the oldest entry
     f("q", ["p"])
     assert n["c"] == 4
+
+
+def test_citation_repair_adds_the_sentence_holding_the_number():
+    s = {"D1.1": "Phí thu xếp được thống nhất trong biên bản.", "D1.2": "Mức phí là 0,85% tổng giá trị đăng ký.",
+         "D2.1": "Một tài liệu khác cũng có 0,85%."}
+    r = llm._repair({"text": "Phí thu xếp là 0,85%.", "citations": [{"doc": "D1", "quote": s["D1.1"]}]}, s)
+    assert r["citations"][-1] == {"doc": "D1", "quote": s["D1.2"]}          # same document first
+    r = llm._repair({"text": "Phí thu xếp là 9,99%.", "citations": [{"doc": "D1", "quote": s["D1.1"]}]}, s)
+    assert len(r["citations"]) == 1                                          # nothing invented
