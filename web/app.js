@@ -137,6 +137,22 @@ async function api(path, opts = {}) {
 }
 const post = (path, body) => api(path, { method: "POST", body });
 
+// Open a cited file: the backend checks this account's access with SharePoint first and only then
+// returns a link (Microsoft 365: the file's own URL, which SharePoint checks against the same SSO
+// login again; demo: a single-use ticket). No public or shareable link is ever shown.
+async function openFile(id) {
+  const w = window.open("", "_blank");
+  if (w) { w.opener = null; w.document.title = "Đang kiểm tra quyền…"; w.document.body.textContent = "Đang kiểm tra quyền truy cập…"; }
+  try {
+    const r = await post(`/api/files/${encodeURIComponent(id)}/link`, {});
+    if (w) w.location.replace(r.url); else location.assign(r.url);
+  } catch (e) { if (w) w.close(); toast(e.message, "bad"); }
+}
+document.addEventListener("click", (e) => {
+  const b = e.target.closest && e.target.closest("[data-open]");
+  if (b) { e.preventDefault(); openFile(b.dataset.open); }
+});
+
 // POST that answers with one JSON object per line (progress events, then {result} or {error}).
 async function postStream(path, body, onEvent) {
   if (MSAL) TOKEN = await msalToken();
@@ -494,12 +510,9 @@ function renderAnswer(r, i) {
       <div class="cite-top"><span class="cite-n">${c.n}</span>${ftype((c.name.split(".").pop() || "").toLowerCase())}<span class="cite-name" title="${esc(c.name)}">${esc(c.name)}</span></div>
       <div class="cite-loc">${esc(c.locator)}</div>
       <blockquote>${esc(c.quote)}</blockquote>
-      ${c.crop ? `<figure class="crop"><img loading="lazy" alt="Vùng tương ứng trên bản scan gốc" src="/crop/${encodeURIComponent(c.item_id)}?t=${encodeURIComponent(TOKEN)}&page=${encodeURIComponent(c.crop.page)}${c.crop.box ? "&box=" + c.crop.box.join(",") : ""}"><figcaption>${c.crop.box ? "Vùng gốc trên bản scan (đã nắn thẳng)" : "Trang scan gốc (đã nắn thẳng)"}</figcaption></figure>` : ""}
+      ${c.crop ? `<figure class="crop"><img loading="lazy" alt="Vùng tương ứng trên bản scan gốc" src="/crop/${encodeURIComponent(c.item_id)}?ticket=${encodeURIComponent(c.crop.ticket || "")}&page=${encodeURIComponent(c.crop.page)}${c.crop.box ? "&box=" + c.crop.box.join(",") : ""}"><figcaption>${c.crop.box ? "Vùng gốc trên bản scan (đã nắn thẳng)" : "Trang scan gốc (đã nắn thẳng)"}</figcaption></figure>` : ""}
       <div class="cite-foot"><span class="chip">${esc(SITE_LABEL[c.site_id] || c.site_id)}</span>${c.ocr ? '<span class="chip info" title="PaddleOCR-VL">văn bản nhận dạng từ bản scan</span>' : ""}
-        <span style="flex:1"></span><a href="${c.web_url ? esc(c.web_url) : `/open/${encodeURIComponent(c.item_id)}?t=${encodeURIComponent(TOKEN)}`}" target="_blank" rel="noopener" title="Mở thẳng file (cần đăng nhập SharePoint)">${icon("file")} Mở file ${icon("ext")}</a></div>
-      ${c.public ? `<div class="cite-public">${icon("globe")} <a href="${esc(c.public.url)}" target="_blank" rel="noopener" title="Link công khai chỉ xem, không cần đăng nhập">Link public thư mục ${esc(c.public.folder)}</a>
-        <span class="muted"> › ${esc(c.public.path.replace(/\//g, " › "))}</span>
-        <button class="btn ghost sm" data-copy="${esc(c.public.url)}" title="Sao chép link public">Sao chép</button></div>` : ""}
+        <span style="flex:1"></span><button class="linkbtn" data-open="${esc(c.item_id)}" title="Hệ thống kiểm tra quyền của tài khoản bạn rồi mới mở file">${icon("file")} Mở file ${icon("ext")}</button></div>
     </div>`).join("")}</div>`;
   return head + claims + cites + trace;
 }
@@ -511,10 +524,6 @@ function wireAnswer(el, i) {
     try { await post("/api/feedback", { audit_seq: m.r.audit_seq, rating: b.dataset.fb, note }); m.fb = b.dataset.fb;
       $$("[data-fb]", el).forEach((x) => x.classList.toggle("on", x.dataset.fb === m.fb)); toast("Cảm ơn phản hồi của bạn"); }
     catch (e) { toast(e.message, "bad"); }
-  });
-  $$("[data-copy]", el).forEach((b) => b.onclick = async () => {
-    try { await navigator.clipboard.writeText(b.dataset.copy); toast("Đã sao chép link public"); }
-    catch { toast("Không sao chép được, hãy bấm chuột phải vào link", "bad"); }
   });
   $$(".crop img", el).forEach((im) => {
     im.onclick = () => im.parentElement.classList.toggle("big");
@@ -604,7 +613,7 @@ async function pageReview(page) {
       <details class="trace"><summary>${icon("file")} ${d.answer.citations.length} trích dẫn</summary>${d.answer.citations.map((c) =>
         `<div class="cite" style="margin-top:8px"><div class="cite-top"><span class="cite-n">${c.n}</span>${ftype((c.name.split(".").pop() || "").toLowerCase())}<span class="cite-name">${esc(c.name)}</span></div>
         <div class="cite-loc">${esc(c.locator)}</div><blockquote>${esc(c.quote)}</blockquote>
-        ${c.web_url ? `<a href="${esc(c.web_url)}" target="_blank" rel="noopener">Mở file ${icon("ext")}</a>` : ""}</div>`).join("")}</details>
+        <button class="linkbtn" data-open="${esc(c.item_id)}">Mở file ${icon("ext")}</button></div>`).join("")}</details>
       ${d.status === "pending" ? `<div class="inline-form"><input class="input" data-note placeholder="Ghi chú cho người hỏi (khi từ chối) hoặc cho nhật ký" style="flex:1;max-width:none">
         <button class="btn danger" data-act="reject">${icon("x")} Từ chối</button>
         <button class="btn primary" data-act="approve">${icon("check")} Duyệt & phát hành</button></div>`
@@ -642,8 +651,7 @@ async function pageSearch(page) {
         ${x.ocr ? '<span class="chip info">bản scan</span>' : ""}</div>
       <div class="muted small">${esc([x.site_id, x.path].filter(Boolean).join(" › "))} · ${esc(x.locator)}</div>
       <p class="snip">${highlight(x.snippet, r.terms)}</p>
-      <div class="cite-foot">${x.web_url ? `<a href="${esc(x.web_url)}" target="_blank" rel="noopener">${icon("file")} Mở file ${icon("ext")}</a>` : ""}
-        ${x.public ? `<a href="${esc(x.public.url)}" target="_blank" rel="noopener">${icon("globe")} Link public thư mục ${esc(x.public.folder)}</a>` : ""}
+      <div class="cite-foot"><button class="linkbtn" data-open="${esc(x.item_id)}">${icon("file")} Mở file ${icon("ext")}</button>
         <span style="flex:1"></span><button class="btn sm" data-askabout="${esc(x.name)}">${icon("chat")} Hỏi về tài liệu này</button></div></div>`).join("");
     $$("[data-askabout]").forEach((b) => b.onclick = () => { location.hash = "#/chat"; setTimeout(() => { const q = $("#q"); if (q) { q.value = `Tài liệu ${b.dataset.askabout} nói gì về `; q.focus(); } }, 50); });
   };

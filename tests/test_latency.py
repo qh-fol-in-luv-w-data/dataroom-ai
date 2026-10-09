@@ -71,7 +71,7 @@ def test_stream_reports_progress_then_same_answer(client):
     assert steps[0].startswith("Cổng 4") and any(s.startswith("LLM") for s in steps)
     assert all(set(e) <= {"step", "ok", "ms", "stage"} for e in events[:-1])   # progress carries no content
     res = events[-1]["result"]
-    assert not res["refused"] and res["claims"] and res["mode"] == "quote"
+    assert not res["refused"] and res["claims"] and res["mode"] == "fact"
     # a user from another group gets the neutral refusal through the stream as well
     rb = client.post("/api/chat/stream", headers=login(client, "inv-b1"), json={"question": "phí thu xếp nhóm A KS-GRPA-0001"})
     res_b = [json.loads(x) for x in rb.text.splitlines() if x.strip()][-1]["result"]

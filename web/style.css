@@ -247,10 +247,11 @@ pre.payload { margin: 0; font-family: var(--mono); font-size: 11px; white-space:
 .crop.big img { max-height: none; cursor: zoom-out; }
 .crop figcaption { font-size: 11px; color: var(--muted); padding: 4px 8px; border-top: 1px solid var(--line); background: var(--surface-2); }
 
-/* public (view-only) folder link + path to the file inside it */
-.cite-public { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 6px; padding-top: 6px;
-  border-top: 1px dashed var(--line); font-size: 12px; }
-.cite-public .muted { overflow-wrap: anywhere; }
+/* "open file" goes through the backend access check (button, not a link) */
+.linkbtn { display: inline-flex; align-items: center; gap: 4px; border: 0; background: none; padding: 2px 0;
+  color: var(--accent, #2563eb); font: inherit; font-size: 12px; cursor: pointer; }
+.linkbtn:hover { text-decoration: underline; }
+.linkbtn svg.i { width: 14px; height: 14px; }
 
 /* BRD v1.4: pending review, feedback, reviewer, search */
 .pending { display: flex; gap: 12px; align-items: flex-start; padding: 14px; border-radius: 10px;

@@ -66,9 +66,7 @@ def search_files(tenant, index, oid: str, roles: list[str], query: str, deps, si
         results.append({
             "item_id": item_id, "name": p["name"], "ext": p["ext"], "site_id": p["site_id"],
             "path": it.get("path", ""), "locator": p["locator"], "ocr": p["ocr"],
-            "snippet": pii.mask(snippet(p["text"], terms))[0],
-            "web_url": getattr(tenant, "web_url", lambda _: None)(item_id),
-            "public": getattr(tenant, "public_url", lambda _: None)(item_id)})
+            "snippet": pii.mask(snippet(p["text"], terms))[0]})
     audit.append(oid, "search", {"query": pii.mask(query)[0], "site": site,
                                  "results": [r["item_id"] for r in results],
                                  "dropped_live": sum(1 for i in best if not live.get(i, (False, ""))[0])})

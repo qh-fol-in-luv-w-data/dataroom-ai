@@ -58,9 +58,23 @@ def test_admin_endpoints_protected(client):
 
 
 def test_open_requires_sharepoint_permission(client):
-    tok = login(client, "inv-b1")["Authorization"].split()[1]
-    assert client.get("/open/a1", params={"t": tok}).status_code == 403
-    assert client.get("/open/b1", params={"t": tok}).status_code == 200
+    h = login(client, "inv-b1")
+    tok = h["Authorization"].split()[1]
+    # a link is handed out only after SharePoint says this account can open the file
+    assert client.post("/api/files/a1/link", headers=h).status_code == 403
+    r = client.post("/api/files/b1/link", headers=h)
+    assert r.status_code == 200
+    url = r.json()["url"]
+    assert url.startswith("/open/b1?ticket=") and tok not in url        # never the session token
+    assert client.get(url).status_code == 200
+    assert client.get(url).status_code == 401                           # single use
+    # the session token itself no longer opens files, a ticket for b1 does not open a1
+    assert client.get("/open/b1", params={"t": tok}).status_code == 422
+    t2 = client.post("/api/files/b1/link", headers=h).json()["url"].split("ticket=")[1]
+    assert client.get("/open/a1", params={"ticket": t2}).status_code == 401
+    assert client.post("/api/files/b1/link").status_code == 401         # not signed in
+    from dr import audit
+    assert any(a["kind"] == "file_link" for a in audit.recent(10))
 
 
 def test_offboard_scenario_blocks_existing_token(client):
@@ -146,14 +160,22 @@ def test_crop_follows_sharepoint_permission(client, tmp_path, monkeypatch):
     with pg.admin() as c:
         c.execute("UPDATE chunks SET ocr = true, ocr_page = %s WHERE item_id = 'a1'", (f"{key}/p1",))
         c.commit()
-    ta = login(client, "inv-a1")["Authorization"].split()[1]
-    tb = login(client, "inv-b1")["Authorization"].split()[1]
+    from dr.gateway import auth
+    ta = auth.issue_ticket("inv-a1", "a1", "crop")
+    tb = auth.issue_ticket("inv-b1", "a1", "crop")
+    tb1 = auth.issue_ticket("inv-b1", "b1", "crop")
     q = {"page": f"{key}/p1", "box": "10,10,200,200"}
-    r = client.get("/crop/a1", params={"t": ta, **q})
+    r = client.get("/crop/a1", params={"ticket": ta, **q})
     assert r.status_code == 200 and r.headers["content-type"] == "image/jpeg"
-    assert client.get("/crop/a1", params={"t": tb, **q}).status_code == 403      # SharePoint says no
-    assert client.get("/crop/b1", params={"t": tb, **q}).status_code == 404      # page is not b1's
-    assert client.get("/crop/a1", params={"t": ta, "page": "../../etc/p1"}).status_code == 404
+    assert client.get("/crop/a1", params={"ticket": tb, **q}).status_code == 403      # SharePoint says no
+    assert client.get("/crop/b1", params={"ticket": tb1, **q}).status_code == 404     # page is not b1's
+    assert client.get("/crop/a1", params={"ticket": ta, "page": "../../etc/p1"}).status_code == 404
+    assert client.get("/crop/b1", params={"ticket": ta, **q}).status_code == 401      # ticket is for a1
+    # answers carry crop tickets, never the session token
+    h = login(client, "inv-a1")
+    res = client.post("/api/chat", headers=h, json={"question": "phí thu xếp nhóm A"}).json()
+    crops = [c["crop"] for c in res["citations"] if c.get("crop")]
+    assert crops and all(c["ticket"] and h["Authorization"].split()[1] not in c["ticket"] for c in crops)
 
 
 def test_chat_rate_limited(client):
@@ -166,10 +188,11 @@ def test_auth_config_demo_mode(client):
     assert client.get("/api/auth/config").json() == {"mode": "demo"}
 
 
-def test_citations_carry_no_web_url_in_demo(client):
+def test_citations_carry_no_links(client):
+    """Links come only from POST /api/files/{id}/link after an access check: no URL in answers."""
     h = login(client, "inv-a1")
     r = client.post("/api/chat", headers=h, json={"question": "phí thu xếp nhóm A"}).json()
-    assert not r["refused"] and all(c["web_url"] is None for c in r["citations"])
+    assert not r["refused"] and all("web_url" not in c and "public" not in c for c in r["citations"])
 
 
 def test_users_cannot_read_scope(client):

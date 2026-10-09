@@ -21,11 +21,32 @@ def test_english_question_gets_english_refusal_and_answer(client):
     assert not r["refused"] and r["lang"] == "en"
 
 
-def test_quote_mode_without_summarize_role(client):
+def test_answer_style_follows_the_question(client):
+    h = login(client, "inv-a1")
+    r = client.post("/api/chat", headers=h, json={"question": "phí thu xếp nhóm A"}).json()
+    assert r["mode"] == "fact" and not r["verbatim"] and not r["claims"][0]["text"].startswith("“")
+    r = client.post("/api/chat", headers=h, json={"question": "Trích nguyên văn phí thu xếp nhóm A"}).json()
+    assert r["mode"] == "full" and r["verbatim"] and all(c["text"].startswith("“") for c in r["claims"])
+    r = client.post("/api/chat", headers=h, json={"question": "Tóm tắt thỏa thuận nhóm A KS-GRPA-0001"}).json()
+    assert r["mode"] == "summary" and any(s["step"] == "Đọc toàn bộ tài liệu được nêu tên (RLS)" for s in r["trace"])
+
+
+def test_role_based_quote_mode_still_available(client, monkeypatch):
+    """BRD v1.4 BR-04 behaviour, kept behind DR_ANSWER_MODE=role."""
+    from dr.config import settings
+    monkeypatch.setattr(settings, "answer_mode", "role")
     r = client.post("/api/chat", headers=login(client, "inv-a1"), json={"question": "phí thu xếp nhóm A"}).json()
-    assert r["mode"] == "quote" and all(c["text"].startswith("“") for c in r["claims"])
+    assert r["verbatim"] and all(c["text"].startswith("“") for c in r["claims"])
     r = client.post("/api/chat", headers=login(client, "staff-1"), json={"question": "phí thu xếp nhóm A"}).json()
-    assert r["mode"] == "summary" and not r["claims"][0]["text"].startswith("“")
+    assert not r["verbatim"] and not r["claims"][0]["text"].startswith("“")
+
+
+def test_named_document_is_read_only_within_permissions(client):
+    # inv-b1 names a group A document: RLS finds nothing, so it is not read
+    r = client.post("/api/chat", headers=login(client, "inv-b1"),
+                    json={"question": "Tóm tắt tài liệu KS-GRPA-0001"}).json()
+    assert not any(c["site_id"] == "GRP-A" for c in r["citations"])
+    assert not any(s["step"] == "Đọc toàn bộ tài liệu được nêu tên (RLS)" for s in r["trace"])
 
 
 def test_sensitive_question_points_to_contact(client):
