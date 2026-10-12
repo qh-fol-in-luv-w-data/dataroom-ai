@@ -1,0 +1,504 @@
+<title>Sơ đồ Data Room AI</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one wide architecture figure (layers top→bottom, source of truth on the right), legend under it,
+   then a two-column detail panel that follows the selected block. */
+:root {
+  --bg: #f3f6f5; --surface: #ffffff; --panel: #e9f0ee; --chip: #f7faf9; --fg: #13201d; --muted: #586a66;
+  --line: #c9d5d2; --accent: #0b7a66; --accent-soft: #d8efe9; --amber: #a35f00; --blue: #3a5a9c;
+  --sans: "Be Vietnam Pro", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d1513; --surface: #141f1c; --panel: #18251f; --chip: #1b2a26; --fg: #e3ece9; --muted: #93a6a1;
+    --line: #2c3d38; --accent: #3cc6a7; --accent-soft: #163a32; --amber: #f0a943; --blue: #8ea9ec; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0d1513; --surface: #141f1c; --panel: #18251f; --chip: #1b2a26; --fg: #e3ece9; --muted: #93a6a1;
+  --line: #2c3d38; --accent: #3cc6a7; --accent-soft: #163a32; --amber: #f0a943; --blue: #8ea9ec; color-scheme: dark;
+}
+body { background: var(--bg); color: var(--fg); font: 15px/1.6 var(--sans); }
+.wrap { max-width: 1240px; margin: 0 auto; padding-inline: 20px; padding-block: 28px 56px; display: grid; gap: 22px; }
+header { display: grid; gap: 6px; max-width: 72ch; }
+.eyebrow { font: 500 12px var(--mono); color: var(--muted); letter-spacing: .02em; }
+h1 { margin: 0; font-size: clamp(26px, 3.2vw, 36px); line-height: 1.15; letter-spacing: -.015em; text-wrap: balance; }
+header p { margin: 0; color: var(--muted); }
+.measure { font-size: 13.5px; color: var(--fg); }
+.measure b { color: var(--accent); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+figure { margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+.scroll { overflow-x: auto; }
+svg.map { display: block; width: 100%; min-width: 980px; height: auto; }
+figcaption { padding: 12px 18px 14px; border-top: 1px solid var(--line); color: var(--muted); font-size: 13.5px; }
+
+/* svg styling (kept outside the svg) */
+.box { fill: var(--surface); stroke: var(--line); stroke-width: 1.2; }
+.corebox { fill: var(--panel); stroke: var(--line); stroke-width: 1.2; }
+.srcbox { fill: var(--panel); stroke: var(--line); stroke-width: 1.2; }
+.chipbox { fill: var(--chip); stroke: var(--line); stroke-width: 1; }
+.gate .chipbox { fill: var(--accent-soft); stroke: var(--accent); }
+.site { fill: var(--surface); stroke: var(--line); }
+.t { fill: var(--fg); font: 600 14px var(--sans); }
+.t2 { fill: var(--fg); font: 600 12.5px var(--sans); }
+.s { fill: var(--muted); font: 12px var(--sans); }
+.s2 { fill: var(--muted); font: 11px var(--sans); }
+.m { fill: var(--muted); font: 11px var(--mono); }
+.h { fill: var(--fg); font: 600 11.5px var(--sans); }
+.lbl { fill: var(--muted); font: 600 10.5px var(--sans); letter-spacing: .1em; }
+.num { fill: var(--accent); }
+.numt { fill: var(--surface); font: 700 10.5px var(--sans); }
+.gate .num { fill: var(--accent); }
+.rls { fill: var(--accent); font: 600 11px var(--sans); }
+.flow { stroke: var(--accent); stroke-width: 2; fill: none; }
+.step { stroke: var(--accent); stroke-width: 1.4; fill: none; }
+.sync { stroke: var(--amber); stroke-width: 1.8; stroke-dasharray: 6 4; fill: none; }
+.ingest { stroke: var(--blue); stroke-width: 1.8; fill: none; }
+.model { stroke: var(--muted); stroke-width: 1.4; fill: none; }
+.login { stroke: var(--muted); stroke-width: 1.3; stroke-dasharray: 3 4; fill: none; }
+.a-flow { fill: var(--accent); font: 500 11px var(--sans); }
+.a-sync { fill: var(--amber); font: 500 11px var(--sans); }
+.a-ingest { fill: var(--blue); font: 500 11px var(--sans); }
+.a-model { fill: var(--muted); font: 500 11px var(--sans); }
+.mk-flow { fill: var(--accent); } .mk-sync { fill: var(--amber); } .mk-ingest { fill: var(--blue); } .mk-model { fill: var(--muted); }
+.node { cursor: pointer; outline: none; }
+.node:hover .box, .node:hover .corebox, .node:hover .srcbox, .node:hover .chipbox { stroke: var(--accent); }
+.node:focus-visible .box, .node:focus-visible .chipbox, .node:focus-visible .srcbox, .node:focus-visible .corebox { stroke: var(--accent); stroke-width: 2.4; }
+.node.sel .box, .node.sel .chipbox, .node.sel .srcbox, .node.sel .corebox { stroke: var(--accent); stroke-width: 2.4; }
+
+.legend { display: flex; flex-wrap: wrap; gap: 10px 22px; font-size: 13px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 8px; }
+.legend svg { width: 34px; height: 12px; flex: none; }
+.legend .sw-gate { width: 22px; height: 14px; border-radius: 4px; background: var(--accent-soft); border: 1.2px solid var(--accent); }
+
+.detail { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 22px; align-items: start; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px; display: grid; gap: 10px; min-width: 0; }
+.card h2 { margin: 0; font-size: 19px; letter-spacing: -.01em; }
+.card .kind { font: 500 11.5px var(--mono); color: var(--accent); letter-spacing: .04em; text-transform: uppercase; }
+.card p { margin: 0; max-width: 68ch; }
+.card ul { margin: 0; padding-left: 20px; display: grid; gap: 4px; }
+.files { display: flex; flex-wrap: wrap; gap: 6px; }
+.files code { font: 12px var(--mono); background: var(--chip); border: 1px solid var(--line); border-radius: 6px; padding: 2px 7px; overflow-wrap: anywhere; }
+.facts { display: grid; gap: 6px; }
+.facts div { display: flex; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--line); padding-bottom: 6px; font-size: 14px; }
+.facts div:last-child { border-bottom: 0; padding-bottom: 0; }
+.facts b { font-variant-numeric: tabular-nums; font-weight: 600; text-align: right; }
+.hint { color: var(--muted); font-size: 13.5px; }
+.ideas { display: grid; gap: 10px; }
+.ideas h3 { margin: 0; font-size: 15px; }
+.ideas p { margin: 0; color: var(--muted); font-size: 14px; }
+
+@media (max-width: 860px) { .detail { grid-template-columns: 1fr; } }
+@media (prefers-reduced-motion: no-preference) { .node .box, .node .chipbox, .node .srcbox, .node .corebox { transition: stroke .15s; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">dataroom-ai-demo · commit 8b7eae3 · quét mã nguồn 12/10/2026</div>
+    <h1>Sơ đồ toàn hệ thống Data Room AI</h1>
+    <p>AI chạy tại chỗ, trả lời câu hỏi của nhà đầu tư chỉ từ tài liệu mà chính người đó được mở trên SharePoint, luôn kèm trích dẫn nguyên văn đã kiểm chứng. Bấm vào một khối hoặc một bước để xem chi tiết.</p>
+    <p class="measure">Đo gần nhất: red-team <b>0/1000</b> câu có lỗ hổng · hỏi chéo nhóm <b>54/54</b> không rò rỉ · câu tiếng Anh <b>11/11</b> · trung vị <b>7,0 s</b>/câu trên MacBook M3 Pro</p>
+  </header>
+
+  <figure>
+    <div class="scroll">
+    <svg class="map" viewBox="0 0 1180 892" role="img" aria-label="Kiến trúc Data Room AI: trình duyệt gửi câu hỏi qua API Gateway vào lõi trả lời 12 bước; lõi đọc Postgres dưới vai trò app_query có RLS, gọi các mô hình AI tại chỗ và hỏi lại SharePoint ở cổng 2; connector đồng bộ quyền và pipeline nạp tài liệu lấy dữ liệu từ Entra ID và SharePoint.">
+      <defs>
+        <marker id="m-flow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="mk-flow" d="M0,0 L10,5 L0,10 z"/></marker>
+        <marker id="m-sync" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="mk-sync" d="M0,0 L10,5 L0,10 z"/></marker>
+        <marker id="m-ingest" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="mk-ingest" d="M0,0 L10,5 L0,10 z"/></marker>
+        <marker id="m-model" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="mk-model" d="M0,0 L10,5 L0,10 z"/></marker>
+      </defs>
+
+      <!-- band labels -->
+      <text class="lbl" x="20" y="36">NGƯỜI DÙNG</text>
+      <text class="lbl" x="20" y="166">CỬA NGÕ</text>
+      <text class="lbl" x="20" y="296">LÕI TRẢ LỜI</text>
+      <text class="lbl" x="20" y="576">DỮ LIỆU</text>
+      <text class="lbl" x="530" y="576">MÔ HÌNH</text>
+      <text class="lbl" x="20" y="786">ĐỒNG BỘ &amp; NẠP</text>
+      <text class="lbl" x="930" y="36">NGUỒN SỰ THẬT</text>
+
+      <!-- login (M365) -->
+      <path class="login" d="M380 44 V22 H1045 V40" marker-end="url(#m-model)"/>
+      <text class="a-model" x="712" y="16" text-anchor="middle">đăng nhập SSO · chế độ Microsoft 365</text>
+
+      <!-- band 1: users -->
+      <g class="node" data-id="browser" tabindex="0" role="button" aria-label="Trình duyệt nhà đầu tư">
+        <rect class="box" x="20" y="44" width="390" height="80" rx="10"/>
+        <text class="t" x="40" y="72">Trình duyệt · nhà đầu tư, nhân viên</text>
+        <text class="s" x="40" y="93">Chat kiểu Claude · khung nguồn · tiến trình từng bước</text>
+        <text class="m" x="40" y="112">web/app.js · web/style.css</text>
+      </g>
+      <g class="node" data-id="admin" tabindex="0" role="button" aria-label="Trình duyệt quản trị viên">
+        <rect class="box" x="440" y="44" width="400" height="80" rx="10"/>
+        <text class="t" x="460" y="72">Trình duyệt · quản trị viên</text>
+        <text class="s" x="460" y="93">Phân quyền · ma trận · phạm vi · kịch bản · nhật ký</text>
+        <text class="m" x="460" y="112">trang quản trị trong web/app.js</text>
+      </g>
+
+      <!-- arrows users <-> gateway -->
+      <line class="flow" x1="120" y1="124" x2="120" y2="172" marker-end="url(#m-flow)"/>
+      <text class="a-flow" x="128" y="153">câu hỏi + token</text>
+      <line class="flow" x1="300" y1="174" x2="300" y2="126" marker-end="url(#m-flow)"/>
+      <text class="a-flow" x="308" y="153">tiến trình · câu trả lời</text>
+      <line class="model" x1="640" y1="124" x2="640" y2="172" marker-end="url(#m-model)"/>
+      <text class="a-model" x="648" y="153">API quản trị (chỉ admin)</text>
+
+      <!-- band 2: gateway -->
+      <g class="node" data-id="gateway" tabindex="0" role="button" aria-label="API Gateway">
+        <rect class="box" x="20" y="174" width="820" height="84" rx="10"/>
+        <text class="t" x="40" y="200">API Gateway · FastAPI :8000</text>
+        <text class="m" x="820" y="200" text-anchor="end">dr/gateway/app.py · auth.py · admin.py</text>
+        <rect class="chipbox" x="40" y="214" width="235" height="28" rx="14"/>
+        <text class="s2" x="157.5" y="232" text-anchor="middle">Token HMAC (demo) · Entra JWT (M365)</text>
+        <rect class="chipbox" x="285" y="214" width="205" height="28" rx="14"/>
+        <text class="s2" x="387.5" y="232" text-anchor="middle">8 câu/phút · 2 câu LLM cùng lúc</text>
+        <rect class="chipbox" x="500" y="214" width="135" height="28" rx="14"/>
+        <text class="s2" x="567.5" y="232" text-anchor="middle">Tiến trình NDJSON</text>
+        <rect class="chipbox" x="645" y="214" width="150" height="28" rx="14"/>
+        <text class="s2" x="720" y="232" text-anchor="middle">Vé mở file dùng 1 lần</text>
+      </g>
+
+      <!-- gateway -> sharepoint (file link) -->
+      <line class="flow" x1="840" y1="248" x2="928" y2="248" marker-end="url(#m-flow)"/>
+      <text class="a-flow" x="885" y="228" text-anchor="middle">kiểm quyền</text>
+      <text class="a-flow" x="885" y="241" text-anchor="middle">rồi cấp link</text>
+
+      <!-- gateway -> core -->
+      <line class="flow" x1="440" y1="258" x2="440" y2="302" marker-end="url(#m-flow)"/>
+      <text class="a-flow" x="448" y="284">ask() trong luồng riêng</text>
+
+      <!-- band 3: core -->
+      <g class="node" data-id="core" tabindex="0" role="button" aria-label="Lõi trả lời">
+        <rect class="corebox" x="20" y="304" width="820" height="230" rx="12"/>
+        <text class="t" x="40" y="330">Lõi trả lời · ask()</text>
+        <text class="m" x="820" y="330" text-anchor="end">dr/core/answer.py</text>
+      </g>
+
+      <!-- row 1 steps -->
+      <g class="node gate" data-id="s1" tabindex="0" role="button" aria-label="Bước 1 cổng 4">
+        <rect class="chipbox" x="40" y="344" width="118" height="56" rx="8"/>
+        <circle class="num" cx="55" cy="363" r="9"/><text class="numt" x="55" y="367" text-anchor="middle">1</text>
+        <text class="t2" x="70" y="367">Cổng 4</text>
+        <text class="s2" x="50" y="388">danh tính · vai trò</text>
+      </g>
+      <g class="node gate" data-id="s2" tabindex="0" role="button" aria-label="Bước 2 cổng 1 và 3">
+        <rect class="chipbox" x="170" y="344" width="118" height="56" rx="8"/>
+        <circle class="num" cx="185" cy="363" r="9"/><text class="numt" x="185" y="367" text-anchor="middle">2</text>
+        <text class="t2" x="200" y="367">Cổng 1+3</text>
+        <text class="s2" x="180" y="388">RLS · tập thu hồi</text>
+      </g>
+      <g class="node" data-id="s3" tabindex="0" role="button" aria-label="Bước 3 lớp chặn">
+        <rect class="chipbox" x="300" y="344" width="118" height="56" rx="8"/>
+        <circle class="num" cx="315" cy="363" r="9"/><text class="numt" x="315" y="367" text-anchor="middle">3</text>
+        <text class="t2" x="330" y="367">Lớp chặn</text>
+        <text class="s2" x="310" y="388">injection · che PII</text>
+      </g>
+      <g class="node" data-id="s4" tabindex="0" role="button" aria-label="Bước 4 nhóm khác và nhạy cảm">
+        <rect class="chipbox" x="430" y="344" width="118" height="56" rx="8"/>
+        <circle class="num" cx="445" cy="363" r="9"/><text class="numt" x="445" y="367" text-anchor="middle">4</text>
+        <text class="t2" x="460" y="367">Nhóm khác</text>
+        <text class="s2" x="440" y="388">nhạy cảm → liên hệ</text>
+      </g>
+      <g class="node" data-id="s5" tabindex="0" role="button" aria-label="Bước 5 câu hỏi chính">
+        <rect class="chipbox" x="560" y="344" width="118" height="56" rx="8"/>
+        <circle class="num" cx="575" cy="363" r="9"/><text class="numt" x="575" y="367" text-anchor="middle">5</text>
+        <text class="t2" x="590" y="367">Câu hỏi chính</text>
+        <text class="s2" x="570" y="388">dấu · thuật ngữ · vế</text>
+      </g>
+      <g class="node" data-id="s6" tabindex="0" role="button" aria-label="Bước 6 tìm kiếm lai">
+        <rect class="chipbox" x="690" y="344" width="118" height="56" rx="8"/>
+        <circle class="num" cx="705" cy="363" r="9"/><text class="numt" x="705" y="367" text-anchor="middle">6</text>
+        <text class="t2" x="720" y="367">Tìm kiếm lai</text>
+        <text class="s2" x="700" y="388">BM25 + vector</text>
+      </g>
+      <line class="step" x1="158" y1="372" x2="168" y2="372" marker-end="url(#m-flow)"/>
+      <line class="step" x1="288" y1="372" x2="298" y2="372" marker-end="url(#m-flow)"/>
+      <line class="step" x1="418" y1="372" x2="428" y2="372" marker-end="url(#m-flow)"/>
+      <line class="step" x1="548" y1="372" x2="558" y2="372" marker-end="url(#m-flow)"/>
+      <line class="step" x1="678" y1="372" x2="688" y2="372" marker-end="url(#m-flow)"/>
+      <path class="step" d="M749 400 V415 H99 V428" marker-end="url(#m-flow)"/>
+
+      <!-- row 2 steps -->
+      <g class="node" data-id="s7" tabindex="0" role="button" aria-label="Bước 7 rerank">
+        <rect class="chipbox" x="40" y="430" width="118" height="56" rx="8"/>
+        <circle class="num" cx="55" cy="449" r="9"/><text class="numt" x="55" y="453" text-anchor="middle">7</text>
+        <text class="t2" x="70" y="453">Rerank</text>
+        <text class="s2" x="50" y="474">40 đoạn → câu</text>
+      </g>
+      <g class="node gate" data-id="s8" tabindex="0" role="button" aria-label="Bước 8 cổng 2">
+        <rect class="chipbox" x="170" y="430" width="118" height="56" rx="8"/>
+        <circle class="num" cx="185" cy="449" r="9"/><text class="numt" x="185" y="453" text-anchor="middle">8</text>
+        <text class="t2" x="200" y="453">Cổng 2</text>
+        <text class="s2" x="180" y="474">hỏi SharePoint</text>
+      </g>
+      <g class="node" data-id="s9" tabindex="0" role="button" aria-label="Bước 9 LLM">
+        <rect class="chipbox" x="300" y="430" width="118" height="56" rx="8"/>
+        <circle class="num" cx="315" cy="449" r="9"/><text class="numt" x="315" y="453" text-anchor="middle">9</text>
+        <text class="t2" x="330" y="453">LLM tại chỗ</text>
+        <text class="s2" x="310" y="474">trích theo mã câu</text>
+      </g>
+      <g class="node" data-id="s10" tabindex="0" role="button" aria-label="Bước 10 kiểm chứng">
+        <rect class="chipbox" x="430" y="430" width="118" height="56" rx="8"/>
+        <circle class="num" cx="445" cy="449" r="9"/><text class="numt" x="445" y="453" text-anchor="middle">10</text>
+        <text class="t2" x="460" y="453">Kiểm chứng</text>
+        <text class="s2" x="440" y="474">nguyên văn · con số</text>
+      </g>
+      <g class="node gate" data-id="s11" tabindex="0" role="button" aria-label="Bước 11 cổng 2 và 4">
+        <rect class="chipbox" x="560" y="430" width="118" height="56" rx="8"/>
+        <circle class="num" cx="575" cy="449" r="9"/><text class="numt" x="575" y="453" text-anchor="middle">11</text>
+        <text class="t2" x="590" y="453">Cổng 2 + 4</text>
+        <text class="s2" x="570" y="474">trọng tâm · NLI</text>
+      </g>
+      <g class="node" data-id="s12" tabindex="0" role="button" aria-label="Bước 12 nhật ký">
+        <rect class="chipbox" x="690" y="430" width="118" height="56" rx="8"/>
+        <circle class="num" cx="705" cy="449" r="9"/><text class="numt" x="705" y="453" text-anchor="middle">12</text>
+        <text class="t2" x="720" y="453">Nhật ký</text>
+        <text class="s2" x="700" y="474">chuỗi hash</text>
+      </g>
+      <line class="step" x1="158" y1="458" x2="168" y2="458" marker-end="url(#m-flow)"/>
+      <line class="step" x1="288" y1="458" x2="298" y2="458" marker-end="url(#m-flow)"/>
+      <line class="step" x1="418" y1="458" x2="428" y2="458" marker-end="url(#m-flow)"/>
+      <line class="step" x1="548" y1="458" x2="558" y2="458" marker-end="url(#m-flow)"/>
+      <line class="step" x1="678" y1="458" x2="688" y2="458" marker-end="url(#m-flow)"/>
+
+      <!-- gate 2 calls SharePoint (before and after the LLM) -->
+      <path class="flow" d="M229 486 V512 H928" marker-end="url(#m-flow)"/>
+      <line class="flow" x1="619" y1="486" x2="619" y2="512"/>
+      <text class="a-flow" x="424" y="506" text-anchor="middle">hỏi SharePoint bằng tài khoản người hỏi</text>
+
+      <!-- core -> postgres, core -> models -->
+      <line class="flow" x1="160" y1="534" x2="160" y2="582" marker-end="url(#m-flow)"/>
+      <text class="a-flow" x="168" y="562">SQL dưới vai trò app_query</text>
+      <line class="model" x1="690" y1="534" x2="690" y2="582" marker-end="url(#m-model)"/>
+      <text class="a-model" x="698" y="562">vector · rerank · LLM · NLI</text>
+
+      <!-- band 4: postgres -->
+      <g class="node" data-id="pg" tabindex="0" role="button" aria-label="PostgreSQL">
+        <rect class="box" x="20" y="584" width="480" height="160" rx="10"/>
+        <text class="t" x="40" y="610">PostgreSQL 15 + pgvector :55432</text>
+        <text class="h" x="40" y="636">Bản chép quyền</text>
+        <text class="m" x="40" y="655">item_reader</text>
+        <text class="m" x="40" y="670">grants · memberships</text>
+        <text class="m" x="40" y="685">revocations</text>
+        <text class="m" x="40" y="700">deny_list · feed_status</text>
+        <text class="h" x="210" y="636">Nội dung tìm kiếm</text>
+        <text class="m" x="210" y="655">items · chunks</text>
+        <text class="m" x="210" y="670">halfvec(1024) · HNSW</text>
+        <text class="m" x="210" y="685">tsvector · GIN</text>
+        <text class="m" x="210" y="700">BM25 theo từng site</text>
+        <text class="h" x="380" y="636">Nhật ký</text>
+        <text class="m" x="380" y="655">audit</text>
+        <text class="m" x="380" y="670">(chuỗi hash)</text>
+        <text class="m" x="380" y="685">review_drafts</text>
+        <text class="rls" x="40" y="730">RLS bắt buộc: app_query chỉ thấy dòng của chính người hỏi</text>
+      </g>
+
+      <!-- band 4: models -->
+      <g class="node" data-id="models" tabindex="0" role="button" aria-label="Mô hình AI tại chỗ">
+        <rect class="box" x="530" y="584" width="310" height="160" rx="10"/>
+        <text class="t" x="550" y="610">Mô hình AI tại chỗ</text>
+        <text class="m" x="550" y="634">Ollama :11434</text>
+        <text class="s" x="550" y="652">qwen2.5:7b · viết câu trả lời</text>
+        <text class="s" x="550" y="670">bge-m3 · vector 1024 chiều</text>
+        <text class="s" x="550" y="688">bge-reranker-v2-m3 · xếp hạng</text>
+        <text class="s" x="550" y="706">mDeBERTa · NLI</text>
+        <text class="s" x="550" y="724">PaddleOCR-VL :8111 · đọc bản scan</text>
+      </g>
+
+      <!-- band 5 arrows up -->
+      <line class="sync" x1="200" y1="794" x2="200" y2="746" marker-end="url(#m-sync)"/>
+      <text class="a-sync" x="208" y="773">ghi bản chép quyền (dr_admin)</text>
+      <line class="ingest" x1="470" y1="794" x2="470" y2="746" marker-end="url(#m-ingest)"/>
+      <text class="a-ingest" x="478" y="773">đoạn + vector</text>
+      <line class="model" x1="760" y1="794" x2="760" y2="746" marker-end="url(#m-model)"/>
+      <text class="a-model" x="768" y="773">OCR · embedding</text>
+
+      <!-- band 5: connector, ingest -->
+      <g class="node" data-id="connector" tabindex="0" role="button" aria-label="Connector đồng bộ quyền">
+        <rect class="box" x="20" y="794" width="380" height="66" rx="10"/>
+        <text class="t" x="40" y="819">Connector đồng bộ quyền</text>
+        <text class="s" x="40" y="840">delta mỗi 5 s · tập thu hồi · dừng AI khi quá 30 s</text>
+      </g>
+      <g class="node" data-id="ingest" tabindex="0" role="button" aria-label="Nạp tài liệu">
+        <rect class="box" x="430" y="794" width="410" height="66" rx="10"/>
+        <text class="t" x="450" y="819">Nạp tài liệu</text>
+        <text class="s" x="450" y="840">kiểm an toàn → 11 định dạng → OCR → tách đoạn → vector</text>
+      </g>
+
+      <!-- source of truth -> connector / ingest -->
+      <path class="sync" d="M1045 860 V878 H200 V862" marker-end="url(#m-sync)"/>
+      <text class="a-sync" x="620" y="873" text-anchor="middle">thay đổi quyền (delta) mỗi 5 s · Entra + SharePoint</text>
+      <line class="ingest" x1="928" y1="827" x2="842" y2="827" marker-end="url(#m-ingest)"/>
+      <text class="a-ingest" x="885" y="820" text-anchor="middle">tải file</text>
+
+      <!-- right column: source of truth -->
+      <g class="node" data-id="entra" tabindex="0" role="button" aria-label="Entra ID">
+        <rect class="srcbox" x="930" y="44" width="230" height="170" rx="10"/>
+        <text class="t" x="950" y="72">Entra ID</text>
+        <text class="s" x="950" y="96">người dùng · nhóm</text>
+        <text class="m" x="950" y="116">DR-INV-A · B · C</text>
+        <text class="m" x="950" y="132">STAFF · ADVISERS</text>
+        <text class="s" x="950" y="156">vai trò ứng dụng</text>
+        <text class="m" x="950" y="176">Investor.AI · Staff.AI</text>
+        <text class="m" x="950" y="192">Reviewer</text>
+      </g>
+      <g class="node" data-id="sharepoint" tabindex="0" role="button" aria-label="SharePoint">
+        <rect class="srcbox" x="930" y="234" width="230" height="626" rx="10"/>
+        <text class="t" x="950" y="262">SharePoint</text>
+        <rect class="site" x="950" y="280" width="190" height="28" rx="6"/>
+        <text class="s2" x="962" y="298">COMMON · tài liệu chung</text>
+        <rect class="site" x="950" y="316" width="190" height="28" rx="6"/>
+        <text class="s2" x="962" y="334">GRP-A · quỹ trong nước</text>
+        <rect class="site" x="950" y="352" width="190" height="28" rx="6"/>
+        <text class="s2" x="962" y="370">GRP-B · quỹ ngoại</text>
+        <rect class="site" x="950" y="388" width="190" height="28" rx="6"/>
+        <text class="s2" x="962" y="406">GRP-C · NĐT chiến lược</text>
+        <rect class="site" x="950" y="424" width="190" height="28" rx="6"/>
+        <text class="s2" x="962" y="442">INTERNAL · Ban IPO</text>
+        <text class="h" x="950" y="562">Quyền</text>
+        <text class="s2" x="950" y="580">nhóm của site, thư mục riêng,</text>
+        <text class="s2" x="950" y="596">link chia sẻ cho từng người</text>
+        <text class="h" x="950" y="628">Nhãn AI_Use</text>
+        <text class="m" x="950" y="646">Allowed · OnPremOnly</text>
+        <text class="m" x="950" y="662">Excluded</text>
+        <text class="h" x="950" y="694">Phiên bản</text>
+        <text class="s2" x="950" y="712">cTag đổi thì nạp lại tài liệu</text>
+        <text class="s2" x="950" y="760">Demo: tenant giả lập</text>
+        <text class="s2" x="950" y="776">Thật: Microsoft Graph</text>
+      </g>
+    </svg>
+    </div>
+    <figcaption>Câu hỏi đi từ trình duyệt qua gateway vào lõi trả lời 12 bước. Lõi chỉ đọc dữ liệu qua vai trò app_query bị RLS lọc theo người hỏi, và hỏi lại SharePoint bằng chính tài khoản người hỏi ở bước 8 và 11 trước khi phát hành câu trả lời. Quyền và tài liệu chảy ngược từ Entra ID và SharePoint vào Postgres qua connector và pipeline nạp.</figcaption>
+  </figure>
+
+  <div class="legend" aria-label="Chú giải">
+    <span><svg viewBox="0 0 34 12"><line class="flow" x1="2" y1="6" x2="32" y2="6"/></svg>luồng câu hỏi và câu trả lời</span>
+    <span><svg viewBox="0 0 34 12"><line class="sync" x1="2" y1="6" x2="32" y2="6"/></svg>đồng bộ quyền</span>
+    <span><svg viewBox="0 0 34 12"><line class="ingest" x1="2" y1="6" x2="32" y2="6"/></svg>nạp tài liệu</span>
+    <span><svg viewBox="0 0 34 12"><line class="model" x1="2" y1="6" x2="32" y2="6"/></svg>gọi mô hình, quản trị</span>
+    <span><i class="sw-gate"></i>cổng quyền (bước 1, 2, 8, 11)</span>
+  </div>
+
+  <section class="detail">
+    <article class="card" id="detail" aria-live="polite"></article>
+    <aside class="card ideas">
+      <h3>AI không đọc thẳng bảng dữ liệu</h3>
+      <p>Mọi truy vấn của lõi chạy dưới vai trò app_query. Chính sách RLS trong Postgres chỉ để lộ các tài liệu có trong item_reader của người đang hỏi, kể cả khi tìm kiếm vector.</p>
+      <h3>SharePoint quyết định lần cuối</h3>
+      <p>Bản chép quyền có thể chậm vài giây, nên bước 8 và bước 11 hỏi lại SharePoint bằng tài khoản người hỏi. Link mở file cũng chỉ được cấp sau một lần kiểm như vậy.</p>
+      <h3>Câu trả lời ra một khối sau kiểm chứng</h3>
+      <p>Trình duyệt thấy tiến trình từng bước, nhưng nội dung chỉ được gửi sau khi trích dẫn, con số và quyền đều đã qua kiểm tra, và đã ghi nhật ký.</p>
+    </aside>
+  </section>
+</div>
+
+<script>
+const D = {
+  browser: { kind: "Người dùng", title: "Trình duyệt · nhà đầu tư, nhân viên",
+    text: "Giao diện chat kiểu Claude. Câu hỏi gửi tới /api/chat/stream, tiến trình hiện từng bước, câu trả lời hiện một lần sau kiểm chứng. Bấm số trích dẫn mở khung nguồn; nút Mở file gọi backend kiểm quyền trước.",
+    list: ["Cuộc trò chuyện chỉ giữ trong phiên, không lưu vào trình duyệt", "Chế độ Microsoft 365 đăng nhập bằng MSAL.js (SSO)", "Câu trả lời không chứa link; link chỉ có sau khi kiểm quyền"],
+    files: ["web/app.js", "web/style.css", "web/index.html"],
+    facts: [["Kiểu trả lời tự chọn", "5 + nhiều vế"], ["Ngôn ngữ", "Việt có/không dấu, Anh"]] },
+  admin: { kind: "Người dùng", title: "Trình duyệt · quản trị viên",
+    text: "Các trang chỉ tài khoản quản trị mở được: phân quyền người dùng, nhóm, thư mục; ma trận người × site; xem AI truy xuất được gì cho từng người; chạy kịch bản thu hồi quyền; xem và kiểm chuỗi nhật ký.",
+    list: ["Thay đổi quyền ghi vào tenant rồi đồng bộ về Postgres", "Quản trị viên không hỏi AI dưới tên mình"],
+    files: ["web/app.js (pagePerms, pageMatrix, pageScope…)", "dr/gateway/admin.py", "dr/gateway/scenarios.py"],
+    facts: [["Trang quản trị", "6"]] },
+  gateway: { kind: "Cửa ngõ", title: "API Gateway · FastAPI :8000",
+    text: "Nhận yêu cầu, xác thực, giới hạn tần suất, chạy câu hỏi trong luồng riêng và gửi tiến trình dạng NDJSON. Khi khởi động, chạy ba luồng nền: connector đồng bộ quyền, nạp tài liệu, làm nóng mô hình.",
+    list: ["Demo: token HMAC; Microsoft 365: token Entra kiểm chữ ký qua JWKS, lời gọi SharePoint on-behalf-of người dùng",
+           "POST /api/files/{id}/link: hỏi SharePoint bằng tài khoản người dùng rồi mới cấp link; demo dùng vé một lần hết hạn sau 2 phút",
+           "Token phiên không bao giờ nằm trong URL"],
+    files: ["dr/gateway/app.py", "dr/gateway/auth.py", "dr/gateway/admin.py", "dr/security/ratelimit.py"],
+    facts: [["Endpoint", "22"], ["Hạn mức", "8/phút · 60/giờ"], ["LLM cùng lúc", "2 câu"]] },
+  core: { kind: "Lõi trả lời", title: "ask() · 12 bước",
+    text: "Mỗi câu hỏi đi qua 12 bước theo đúng thứ tự trong code. Bốn bước tô xanh là cổng quyền. Mỗi bước ghi vào trace (tên, đạt hay không, thời gian), xem được trong mục Chi tiết kiểm tra trên giao diện.",
+    list: ["Từ chối ở bất kỳ bước nào cũng ghi nhật ký", "Câu nhạy cảm của nhà đầu tư chuyển liên hệ chú Trần Kim Chung, không trả lời"],
+    files: ["dr/core/answer.py", "dr/core/gates.py", "dr/core/intent.py", "dr/core/verify.py"],
+    facts: [["Câu hỏi nhanh", "7–10 s"], ["Tổng hợp, liệt kê", "20–35 s"], ["Câu lặp lại", "< 0,3 s"]] },
+  s1: { kind: "Bước 1 · cổng quyền", title: "Cổng 4: danh tính, vai trò, độ tươi",
+    text: "Tài khoản không bị chặn hay khóa, vai trò AI có cả trong token lẫn bản chép quyền, và nguồn quyền Entra/SharePoint được đồng bộ trong vòng 30 giây. Nếu nguồn quyền cũ hơn, AI tạm dừng thay vì trả lời theo quyền có thể đã lỗi thời.",
+    files: ["dr/core/gates.py · principal_gate", "schema.sql · me_denied, me_has_role, feed_age"], facts: [["Nguồn quyền tối đa", "30 s"]] },
+  s2: { kind: "Bước 2 · cổng quyền", title: "Cổng 1+3: RLS và tập thu hồi",
+    text: "Đếm tài liệu người hỏi được dùng với AI ngay dưới RLS. Tập thu hồi bỏ các đường quyền đi qua nhóm vừa bị rút, vì SharePoint có thể còn trễ tới 60 giây.",
+    files: ["dr/core/gates.py", "dr/connector/sync.py · revocations"], facts: [["Độ trễ nhóm SharePoint (giả lập)", "60 s"]] },
+  s3: { kind: "Bước 3", title: "Lớp chặn đầu vào và che dữ liệu cá nhân",
+    text: "Chuẩn hóa ký tự ẩn và chữ giả dạng, bỏ ký tự điều khiển, chạy luật chống prompt injection tiếng Việt và tiếng Anh, rồi bộ phân loại trên vector bge-m3 (chấm cả từng câu của câu hỏi dài). Che CCCD, hộ chiếu, số điện thoại, email.",
+    files: ["dr/security/guard.py", "dr/security/guard_model.json", "dr/security/pii.py"],
+    facts: [["Bắt tấn công (tập thử)", "87,7%"], ["Chặn nhầm câu hợp lệ", "2,0%"], ["Red-team: chặn", "132/150"]] },
+  s4: { kind: "Bước 4", title: "Câu hỏi về nhóm khác và chủ đề nhạy cảm",
+    text: "Câu hỏi nhắc tới nhóm mà người hỏi không thuộc về chỉ được trả lời từ tài liệu chung; không có thì báo lịch sự là ngoài phạm vi. Chủ đề nhạy cảm (định giá, giá chào bán, phân bổ, cam kết lợi nhuận, dự báo, tranh chấp) không được AI trả lời cho nhà đầu tư.",
+    files: ["dr/core/audience.py", "dr/core/review.py"], facts: [["Hỏi chéo nhóm", "54/54 không rò rỉ"], ["Câu nhạy cảm", "30/30 chuyển liên hệ"]] },
+  s5: { kind: "Bước 5", title: "Câu hỏi chính và kiểu trả lời",
+    text: "Bỏ lời mào đầu, khôi phục dấu cho câu gõ không dấu (học từ tài liệu chung), thêm thuật ngữ tiếng Việt cho câu tiếng Anh, tách câu nhiều vế. Chọn kiểu trả lời: nhanh, tổng hợp, so sánh, liệt kê, nguyên văn hoặc nhiều vế.",
+    files: ["dr/core/intent.py", "dr/core/accents.py", "dr/core/lang.py"], facts: [["Câu tiếng Anh đúng", "5 → 11/11"], ["Khôi phục dấu đúng", "~95% số từ"]] },
+  s6: { kind: "Bước 6", title: "Tìm kiếm lai trong Postgres",
+    text: "BM25 (thống kê riêng từng site) cộng tìm vector HNSW, chạy ngay trong Postgres dưới RLS nên id ngoài quyền không ra khỏi câu SQL. Câu nhiều vế tìm cả câu và từng vế rồi gộp xen kẽ.",
+    files: ["dr/core/pgindex.py", "schema.sql · fts_candidates"], facts: [["Thử 1 triệu đoạn", "p50 160–535 ms"]] },
+  s7: { kind: "Bước 7", title: "Rerank đoạn, rồi chọn câu",
+    text: "bge-reranker-v2-m3 xếp lại khoảng 40 đoạn, giữ 5 đoạn cho câu hỏi nhanh. Sau đó chấm từng câu, bỏ dòng chân trang lặp, và chỉ giữ câu liên quan nhất trong ngân sách 3.500 ký tự (7.000 với câu hỏi rộng).",
+    files: ["dr/models/rerank.py", "dr/core/answer.py · focus_sentences"], facts: [["Rerank 40 đoạn", "~1,5 s"]] },
+  s8: { kind: "Bước 8 · cổng quyền", title: "Cổng 2: hỏi SharePoint bằng tài khoản người hỏi",
+    text: "Với từng file sắp dùng, hỏi SharePoint dưới danh nghĩa người hỏi: còn quyền mở, đúng phiên bản đã lập chỉ mục, nhãn AI_Use cho phép. File không đạt bị bỏ lặng lẽ và lấy file kế tiếp bù vào; lỗi mạng thì coi như không đạt.",
+    files: ["dr/core/gates.py · live_check", "dr/m365/tenant.py · get_item_as_user (OBO)"], facts: [["Kịch bản đổi quyền giữa chừng", "5/5 chặn đúng"]] },
+  s9: { kind: "Bước 9", title: "LLM tại chỗ: trích theo mã câu",
+    text: "qwen2.5:7b chạy trong Ollama, trả JSON có ràng buộc. Mỗi câu trong tài liệu mang mã như [D2.3]; model ghi mã thay vì chép lại câu trích. Tài liệu được bọc như dữ liệu không tin cậy với ranh giới ngẫu nhiên mỗi lần hỏi.",
+    files: ["dr/models/llm.py"], facts: [["Đọc đầu vào", "~400 token/s"], ["Sinh chữ", "~30 token/s"]] },
+  s10: { kind: "Bước 10", title: "Kiểm chứng tất định",
+    text: "Một ý chỉ được giữ khi câu trích có thật trong đoạn đã đưa cho model và mọi con số trong ý xuất hiện trong câu trích (so theo giá trị: 2.786,9 = 2,786.9). Model ghi đúng số nhưng gắn nhầm câu thì hệ thống tự gắn câu chứa con số đó.",
+    files: ["dr/core/verify.py", "dr/models/llm.py · _repair"], facts: [["Câu hỏi chuẩn", "9/11 đúng"]] },
+  s11: { kind: "Bước 11 · cổng quyền", title: "Trọng tâm, NLI, cổng 2 và 4 lần cuối",
+    text: "Bỏ ý lạc đề (điểm reranker và độ trùng từ khóa), chấm NLI làm tín hiệu 'chưa chắc', hỏi lại SharePoint cho những file được trích và chạy lại cổng 4, vì quyền có thể đổi trong lúc model đang viết. Cuối cùng kiểm nội dung câu trả lời có chạm chủ đề nhạy cảm không.",
+    files: ["dr/core/answer.py", "dr/core/intent.py · term_overlap", "dr/models/nli.py"], facts: [["Giữ ý đúng / loại ý lạc đề", "45/46 · 453/460"]] },
+  s12: { kind: "Bước 12", title: "Nhật ký chuỗi hash và phát hành",
+    text: "Ghi nhật ký qua hàm audit_append: mỗi dòng chứa hash của dòng trước (SHA-256), lưu câu hỏi đã che dữ liệu cá nhân, các file và phiên bản được trích, và hash của câu trả lời thay vì nguyên văn. Sau đó câu trả lời được gửi đi trong một khối.",
+    files: ["dr/audit.py", "schema.sql · audit_append"], facts: [["Kiểm toàn chuỗi", "/api/audit/verify"]] },
+  pg: { kind: "Dữ liệu", title: "PostgreSQL 15 + pgvector",
+    text: "Một cơ sở dữ liệu chứa cả bản chép quyền, nội dung tìm kiếm và nhật ký. Lõi chỉ kết nối bằng vai trò app_query (không vượt được RLS, chỉ được SELECT bốn bảng); connector và nạp tài liệu dùng dr_admin.",
+    list: ["chunks chỉ hiện khi: là bản hiện hành, cùng phiên bản với file, AI_Use cho phép, không mã hóa, không mã độc", "Thống kê BM25 tính riêng từng site để tài liệu nhóm này không ảnh hưởng xếp hạng nhóm khác"],
+    files: ["dr/db/schema.sql", "dr/db/pg.py"], facts: [["Bảng", "15"], ["Hàm SQL", "6"], ["Vector", "halfvec(1024) · HNSW"]] },
+  models: { kind: "Mô hình", title: "Mô hình AI tại chỗ",
+    text: "Không gửi dữ liệu ra ngoài. LLM và embedding chạy trong Ollama; reranker và NLI chạy trên GPU Apple; OCR bản scan chạy PaddleOCR-VL qua máy chủ mlx_vlm riêng, có PP-OCRv5 đọc đối chiếu con số.",
+    list: ["qwen2.5:7b Q4_K_M, giữ trong bộ nhớ 24 giờ", "Kết quả mô hình được nhớ theo đúng đầu vào; câu hỏi lặp lại trả lời gần như tức thì"],
+    files: ["dr/models/llm.py", "dr/models/embed.py", "dr/models/rerank.py", "dr/models/nli.py", "dr/ingest/ocr.py"],
+    facts: [["Phần LLM trong thời gian trả lời", "phần lớn"], ["OCR: số đúng trên bản scan khó", "98,4%"]] },
+  connector: { kind: "Đồng bộ", title: "Connector đồng bộ quyền",
+    text: "Khi khởi động đồng bộ toàn bộ, sau đó đọc thay đổi (delta) của Entra và SharePoint mỗi 5 giây, ghi vào các bảng bản chép quyền và dựng lại item_reader. Khi một người bị rút khỏi nhóm, ghi tập thu hồi để AI chặn ngay cả khi SharePoint còn trễ.",
+    files: ["dr/connector/sync.py"], facts: [["Chu kỳ", "5 s"], ["Ngưỡng dừng AI", "30 s"]] },
+  ingest: { kind: "Nạp tài liệu", title: "Pipeline nạp tài liệu",
+    text: "Tải file từ tenant, chặn file mã hóa hoặc có mã độc, đọc 11 định dạng (docx, xlsx, pptx, pdf, eml, html, csv, md, txt, png, jpg), làm sạch và OCR bản scan, tách đoạn có vị trí trích dẫn, tạo vector bge-m3, gắn cờ đoạn nghi prompt injection. File đổi phiên bản thì nạp lại.",
+    files: ["dr/ingest/pipeline.py", "dr/ingest/safety.py", "dr/ingest/parsers.py", "dr/ingest/preprocess.py", "dr/ingest/chunker.py"],
+    facts: [["Tài liệu demo", "500+"], ["Đoạn hiện hành", "~2.560"]] },
+  entra: { kind: "Nguồn sự thật", title: "Entra ID",
+    text: "Nguồn sự thật về người dùng, nhóm và vai trò ứng dụng. Nhóm DR-INV-A, B, C quyết định nhà đầu tư thuộc site nào; vai trò Investor.AI hoặc Staff.AI quyết định có được dùng AI không.",
+    files: ["dr/tenant/service.py (giả lập)", "dr/m365/tenant.py", "dr/m365/entra_auth.py"], facts: [["Chế độ", "giả lập · Microsoft 365"]] },
+  sharepoint: { kind: "Nguồn sự thật", title: "SharePoint",
+    text: "Nguồn sự thật về tài liệu và quyền mở. Quyền đi theo nhóm của site, thư mục có quyền riêng và link chia sẻ cho từng người; nhãn AI_Use quyết định tài liệu có được đưa cho AI không; cTag cho biết phiên bản.",
+    list: ["Lõi hỏi lại SharePoint ở bước 8 và 11", "Thư viện DataRoom AI Demo không còn link 'Anyone' nào (quét lại: 0)"],
+    files: ["dr/tenant/service.py", "dr/m365/graph.py", "scripts/sp_upload.py"], facts: [["Site", "5"], ["Nhãn AI_Use", "3 giá trị"]] },
+};
+const el = document.getElementById("detail");
+function show(id) {
+  const d = D[id]; if (!d) return;
+  document.querySelectorAll(".node").forEach((n) => n.classList.toggle("sel", n.dataset.id === id));
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  el.innerHTML = `<div class="kind">${esc(d.kind)}</div><h2>${esc(d.title)}</h2><p>${esc(d.text)}</p>`
+    + (d.list ? `<ul>${d.list.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : "")
+    + (d.facts ? `<div class="facts">${d.facts.map(([k, v]) => `<div><span>${esc(k)}</span><b>${esc(v)}</b></div>`).join("")}</div>` : "")
+    + `<div class="files">${d.files.map((f) => `<code>${esc(f)}</code>`).join("")}</div>`
+    + `<p class="hint">Bấm khối hoặc bước khác trong sơ đồ để đổi nội dung ở đây.</p>`;
+  try { localStorage.setItem("dr-map-sel", id); } catch (e) {}
+}
+document.querySelectorAll(".node").forEach((n) => {
+  n.addEventListener("click", (e) => { e.stopPropagation(); show(n.dataset.id); });
+  n.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); show(n.dataset.id); } });
+});
+let start = "core";
+try { const v = localStorage.getItem("dr-map-sel"); if (v && D[v]) start = v; } catch (e) {}
+show(start);
+</script>
