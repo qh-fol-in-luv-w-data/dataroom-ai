@@ -53,6 +53,8 @@ PLANS = {
     "compare": Plan("compare", 16, 3, 48, 8, False, False),
     "list": Plan("list", 14, 4, 48, 10, False, False),
     "full": Plan("full", 10, 6, 40, 8, True, False),
+    # several facts or a comparison in one question: each part is searched and ranked on its own
+    "multi": Plan("multi", 12, 3, 36, 6, False, False),
 }
 
 
@@ -88,3 +90,102 @@ def term_overlap(question: str, answer: str) -> float:
     """Share of the question's key terms that the answer (claim + its quotes) contains."""
     q = key_terms(question)
     return len(q & key_terms(answer)) / max(1, len(q))
+
+
+# ------------------------------------------------------------------ the question itself
+_QWORD = re.compile(r"\b(bao nhieu|la gi|nhung gi|nao|khi nao|ai|bao lau|the nao|ra sao|co .{1,60} khong|"
+                    r"what|how|which|who|when|where|why|is there|are there|does|do|did|can)\b")
+
+
+def _asks(text: str) -> bool:
+    t = unidecode(text).lower()
+    return "?" in text or bool(_QWORD.search(t))
+
+
+def core_question(question: str) -> str:
+    """The question without its preface. "Chị Lan bên Ban IPO dặn tôi hỏi trực tiếp: <câu hỏi>" or
+    "Our committee meets next week. <question>?" -> the question itself. Retrieval and the model
+    work on this; the full text still goes through the input guard, the sensitive/other-group checks
+    and the audit log, so a preface can neither hide an attack nor steer the search."""
+    q = question.strip()
+    if ":" in q:
+        head, tail = q.rsplit(":", 1)
+        tail = tail.strip()
+        if (len(tail) >= 12 and "?" not in head and _asks(tail)
+                and not (head[-1:].isdigit() and tail[:1].isdigit())):      # not a time like 10:30
+            return tail
+    sents = [s.strip() for s in re.split(r"(?<=[.!?])\s+|\n+", q) if s.strip()]
+    if len(sents) > 1:
+        asks = [s for s in sents if _asks(s)]
+        if asks and len(asks) < len(sents):
+            return " ".join(asks)
+    return q
+
+
+_LEAD = re.compile(r"^\s*(so sanh|compare|doi chieu)\s+", re.I)
+_VS = re.compile(r"\s+(?:voi|so voi|versus|vs\.?|with|against)\s+", re.I)
+_AND = re.compile(r"\s*(?:,|;|\bva\b|\band\b|\bcung\b)\s*", re.I)
+
+
+def sub_questions(question: str) -> list[str]:
+    """Parts of a several-part question ("So sánh phí thu xếp nhóm A với room ngoại nhóm B",
+    "Doanh thu 2025 và tổng công suất lắp đặt?"), each searched on its own so that every part gets
+    passages. Split on commas/"và"/"and", and on "với/with" only after "so sánh/compare".
+    A part needs two key terms; otherwise the question is not split. Parts keep the original text."""
+    folded = unidecode(question).lower().rstrip(" ?.!")
+    if len(folded) != len(question.rstrip(" ?.!")):          # unidecode changed lengths: no safe mapping
+        return []
+    orig = question.rstrip(" ?.!")
+    m = _LEAD.match(folded)
+    start = m.end() if m else 0
+    spans = [(start, len(folded))]
+    if m:
+        cuts = [(x.start(), x.end()) for x in _VS.finditer(folded, start)]
+        spans, pos = [], start
+        for a, b in cuts:
+            spans.append((pos, a))
+            pos = b
+        spans.append((pos, len(folded)))
+    parts: list[str] = []
+    for a, b in spans:
+        pos = a
+        for x in _AND.finditer(folded, a, b):
+            parts.append(orig[pos:x.start()])
+            pos = x.end()
+        parts.append(orig[pos:b])
+    parts = [p.strip() for p in parts if len(key_terms(p)) >= 2]
+    return parts if len(parts) >= 2 else []
+
+
+# English questions over Vietnamese documents: cross-lingual ranking is weak (the right passage scored
+# 0.007), so the Vietnamese terms of a fixed IPO glossary are added to what is searched and ranked.
+# Deterministic (no model translation: the 7B model drifted into Chinese and produced wrong answers).
+GLOSSARY = [
+    ("arrangement fee", "phí thu xếp"), ("lock-up", "lock-up cam kết nắm giữ"), ("lockup", "lock-up"),
+    ("installed capacity", "công suất lắp đặt"), ("capacity", "công suất"), ("net revenue", "doanh thu thuần"),
+    ("revenue", "doanh thu"), ("net profit", "lợi nhuận sau thuế"), ("profit after tax", "lợi nhuận sau thuế"),
+    ("foreign ownership room", "room ngoại"), ("ownership room", "room ngoại"), ("foreign ownership", "sở hữu nước ngoài"),
+    ("board member", "thành viên HĐQT"), ("board seat", "thành viên HĐQT"), ("board of directors", "HĐQT"),
+    ("nominate", "đề cử"), ("strategic investor", "nhà đầu tư chiến lược"), ("domestic fund", "quỹ trong nước"),
+    ("foreign fund", "quỹ ngoại"), ("foreign investor", "nhà đầu tư nước ngoài"), ("offering price", "giá chào bán"),
+    ("offer price", "giá chào bán"), ("valuation", "định giá"), ("provision", "khoản dự phòng"),
+    ("dispute", "tranh chấp"), ("contractor", "nhà thầu"), ("hedging", "bảo hiểm tỷ giá"),
+    ("ceiling rate", "tỷ giá trần"), ("exchange rate", "tỷ giá"), ("fx", "tỷ giá"), ("shares", "cổ phần"),
+    ("auditor", "kiểm toán"), ("audit", "kiểm toán"), ("power purchase agreement", "hợp đồng mua bán điện"),
+    ("ppa", "hợp đồng mua bán điện"), ("dividend", "cổ tức"), ("listing", "niêm yết"), ("bookbuilding", "dựng sổ"),
+    ("underwriter", "bảo lãnh phát hành"), ("plant", "nhà máy"), ("solar", "điện mặt trời"), ("wind", "điện gió"),
+    ("debt", "nợ vay"), ("loan", "khoản vay"), ("payment", "thanh toán"), ("internal", "nội bộ"),
+    ("group a", "nhóm A"), ("group b", "nhóm B"), ("group c", "nhóm C"), ("fee", "phí"),
+]
+
+
+def expand_en(question: str) -> str:
+    """English question + the Vietnamese terms its words stand for (longest match first)."""
+    q = " " + re.sub(r"[^a-z0-9\- ]", " ", question.lower()) + " "
+    found: list[str] = []
+    for en, vi in sorted(GLOSSARY, key=lambda x: -len(x[0])):
+        if f" {en} " in q or f" {en}s " in q:
+            q = q.replace(f" {en}s ", " ").replace(f" {en} ", " ")
+            if vi not in found:
+                found.append(vi)
+    return f"{question} ({'; '.join(found)})" if found else question

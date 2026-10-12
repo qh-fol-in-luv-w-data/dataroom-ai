@@ -19,7 +19,7 @@ from unidecode import unidecode
 from dr import audit
 from dr.config import (BLOCKED_MESSAGE, NEUTRAL_REFUSAL, OUT_OF_SCOPE_MESSAGE, RETRY_MESSAGE, UNAVAILABLE_MESSAGE,
                        settings)
-from dr.core import audience, gates, intent, verify
+from dr.core import accents, audience, gates, intent, verify
 from dr.core.index import SearchIndex
 from dr.core import lang as lang_mod
 from dr.core import review
@@ -39,12 +39,13 @@ class Deps:
     nli: Callable | None = None
     embed_many: Callable | None = None     # batch embeddings (input guard scores parts of long questions)
     llm_quotes: Callable | None = None     # quote mode: model picks sentence ids, quotes are the sentences
+    nli_many: Callable | None = None       # NLI for all claims in one batch
 
     @classmethod
     def real(cls) -> "Deps":
         from dr.models import embed, llm, nli, rerank
         return cls(embed.embed_query, rerank.rerank, llm.answer_json, nli.entail, embed_many=embed.embed_texts,
-                   llm_quotes=llm.answer_quotes)
+                   llm_quotes=llm.answer_quotes, nli_many=nli.entail_many)
 
 
 @dataclass
@@ -135,8 +136,20 @@ def document_chunks(oid: str, codes: list[str], files: list[str], limit: int = 4
 _BOILERPLATE = re.compile(r"(^|[.!?]\s)\s*(pham vi chia se|phan loai|scope of sharing|classification)\s*:")
 
 
+MAX_SENTENCE_CHARS = 400        # a merged table row can run to thousands of characters
+
+
+def _clip(sentence: str) -> str:
+    """A long sentence cut at a word boundary; still a substring of the passage, so quotes verify."""
+    if len(sentence) <= MAX_SENTENCE_CHARS:
+        return sentence
+    cut = sentence[:MAX_SENTENCE_CHARS]
+    return cut[:cut.rfind(" ")] if " " in cut else cut
+
+
 def focus_sentences(question: str, llm_in: list[dict], deps: Deps, trace: Trace, n: int | None = None,
-                    keep_order_only: bool = False) -> list[dict]:
+                    keep_order_only: bool = False, queries: list[str] | None = None,
+                    budget: int | None = None) -> list[dict]:
     """Keep only the n sentences the reranker scores highest (in their original order). The kept
     text is a subset of each passage, so quotes still verify against the full passage; passages
     left with no sentence are not sent. keep_order_only: a whole named document is summarised,
@@ -153,21 +166,30 @@ def focus_sentences(question: str, llm_in: list[dict], deps: Deps, trace: Trace,
             if key in seen or _BOILERPLATE.search(unidecode(s).lower()):
                 continue
             seen.add(key)
-            sents.append((i, j, s))
-    if len(sents) <= n:
-        keep = {(i, j) for i, j, _ in sents}
-    elif keep_order_only:
-        keep = {(i, j) for i, j, _ in sents[:n]}
+            sents.append((i, j, _clip(s)))
+    if keep_order_only:
+        ranked = [(i, j) for i, j, _ in sents]
     else:
-        scores = deps.rerank(question, [s for _, _, s in sents])
-        keep = {(i, j) for (i, j, _), _ in sorted(zip(sents, scores), key=lambda x: -x[1])[:n]}
+        texts = [s for _, _, s in sents]
+        scores = deps.rerank(question, texts)
+        for extra in queries or []:              # several-part question: best match over the parts
+            scores = [max(a, b) for a, b in zip(scores, deps.rerank(extra, texts))]
+        ranked = [(i, j) for (i, j, _), _ in sorted(zip(sents, scores), key=lambda x: -x[1])]
+    # best sentences first, up to n sentences and a character budget (prompt reading is the slow half)
+    length = {(i, j): len(s) for i, j, s in sents}
+    keep, used = set(), 0
+    for key in ranked[:n]:
+        if budget and keep and used + length[key] > budget:
+            continue
+        keep.add(key)
+        used += length[key]
     out = []
     for i, p in enumerate(llm_in):
         kept = [s for (pi, j, s) in sents if pi == i and (pi, j) in keep]
         if kept:
             out.append({**p, "text": "\n".join(kept)})
     trace.add("Chọn câu liên quan trong các đoạn (rerank theo câu)", True, sentences=f"{len(keep)}/{len(sents)}",
-              passages=len(out))
+              passages=len(out), chars=used)
     return out
 
 
@@ -283,6 +305,17 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
         if kinds:
             trace.add("Che thông tin cá nhân trong câu hỏi", True, kinds=kinds)
             question = masked_q
+    # ---- the question that is searched and read: its core (a preface is dropped), English terms
+    # glossed in Vietnamese, and for a several-part question each part on its own
+    q_core = intent.core_question(question)
+    if lang == "vi" and accents.unaccented(q_core):
+        q_core = accents.restore(q_core)          # "Dinh gia noi bo" -> "Định giá nội bộ" (shared-site vocabulary)
+    glossed = (lambda t: intent.expand_en(t)) if lang == "en" else (lambda t: t)
+    q_search = glossed(q_core)
+    if q_search != question:
+        trace.add("Câu hỏi dùng để tìm", True, core=q_core[:200], glossed=q_search != q_core)
+        if deps.embed_query:
+            qvec = deps.embed_query(q_search)
     # ---- what kind of answer the question asks for (fact / summary / compare / list / full text)
     plan = intent.plan_for(question)
     if settings.answer_mode == "role" and not (
@@ -294,20 +327,31 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
             r"noi (ve )?(noi dung )?gi|about what|what does", unidecode(question).lower()):
         plan = intent.PLANS["summary"]
         whole_doc = document_chunks(oid, codes, files_named)
-    trace.add("Phân loại câu hỏi", True, intent=plan.intent, named_document=bool(whole_doc))
+    parts = [glossed(p) for p in intent.sub_questions(q_core)] if not whole_doc and not plan.verbatim else []
+    if parts and plan.intent == "fact":
+        plan = intent.PLANS["multi"]
+    trace.add("Phân loại câu hỏi", True, intent=plan.intent, named_document=bool(whole_doc), parts=len(parts))
 
     trace.stage("search")
     if whole_doc:
         hits = [(c, 1.0) for c in whole_doc]
         trace.add("Đọc toàn bộ tài liệu được nêu tên (RLS)", True, chunks=len(hits))
-    elif getattr(index, "in_db", False):
-        hits, info = index.search_as(oid, question, qvec, k=max(settings.rerank_top, plan.passages * 3),
-                                     site=scope_site)
-        trace.add("Tìm kiếm lai BM25 + vector trong Postgres (RLS ngay trong câu truy vấn)", True,
-                  hits=len(hits), **info)
     else:
-        hits = index.search(set(allowed), question, qvec, k=max(settings.rerank_top, plan.passages * 3))
-        trace.add("Tìm kiếm lai BM25 + vector (chỉ trên id được phép)", True, hits=len(hits))
+        # a several-part question searches the whole question AND each part: on the evaluation set the
+        # answer passages reached the model for 9/13 parts this way, 7/13 whole-question only, 8/13 parts only
+        part_hits: dict[str, list] = {}
+        for qq in [q_search] + parts:
+            v = qvec if qq == q_search else (deps.embed_query(qq) if deps.embed_query else None)
+            k = max(settings.rerank_top, plan.passages * 3) if qq == q_search else max(16, settings.rerank_top // 2)
+            if getattr(index, "in_db", False):
+                part_hits[qq], info = index.search_as(oid, qq, v, k=k, site=scope_site)
+            else:
+                part_hits[qq], info = index.search(set(allowed), qq, v, k=k), {}
+        hits, have = [], set()
+        for hs in part_hits.values():
+            hits += [h for h in hs if h[0] not in have and not have.add(h[0])]
+        trace.add("Tìm kiếm lai BM25 + vector (RLS ngay trong câu truy vấn)", True, hits=len(hits),
+                  parts=len(parts), **info)
     passages = gates.fetch_passages(oid, [cid for cid, _ in hits])
     order = [cid for cid, _ in hits if cid in passages]
     if other:
@@ -320,8 +364,25 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
             return out_of_scope()
 
     top_rerank = None
-    if deps.rerank and order and not whole_doc:
-        scores = deps.rerank(question, [passages[c]["text"] for c in order])
+    if deps.rerank and order and not whole_doc and parts:
+        # each part ranks its own candidates; the lists are interleaved so every part gets passages
+        allowed_order = set(order)
+        ranked = []
+        for qq in [q_search] + parts:
+            cand = [c for c, _ in part_hits[qq] if c in allowed_order]
+            sc = deps.rerank(qq, [passages[c]["text"] for c in cand]) if cand else []
+            ranked.append([c for _, c in sorted(zip(sc, cand), key=lambda x: -x[0])])
+            top_rerank = max([top_rerank or 0.0, *sc]) if sc else top_rerank
+        order, seen_o = [], set()
+        for row in zip(*[r + [None] * (max(map(len, ranked)) - len(r)) for r in ranked]):
+            for c in row:
+                if c is not None and c not in seen_o:
+                    seen_o.add(c)
+                    order.append(c)
+        trace.add("Rerank bge-reranker-v2-m3 theo từng phần", True, parts=len(parts),
+                  top_score=round(top_rerank, 3) if top_rerank is not None else None)
+    elif deps.rerank and order and not whole_doc:
+        scores = deps.rerank(q_search, [passages[c]["text"] for c in order])
         top_rerank = max(scores) if scores else None
         for c, s in zip(order, scores):
             passages[c]["rerank"] = s
@@ -380,18 +441,25 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
     # Full-text questions get the source sentences themselves: the model just picks sentence ids.
     verbatim = plan.verbatim
     llm_call = deps.llm_quotes if verbatim and deps.llm_quotes else deps.llm
-    llm_in = [{"chunk_id": c, "text": passages[c]["text"],
-               "source": f'{passages[c]["name"]} · {passages[c]["locator"]}'} for c in selected]
+    llm_in = [{"chunk_id": c, "text": passages[c]["text"], "source": passages[c]["name"]} for c in selected]
     n_sent = settings.max_sentences if plan.intent == "fact" else plan.sentences
-    llm_in = focus_sentences(question, llm_in, deps, trace, n=n_sent, keep_order_only=bool(whole_doc))
+    llm_in = focus_sentences(q_search, llm_in, deps, trace, n=n_sent, keep_order_only=bool(whole_doc),
+                             queries=parts, budget=settings.prompt_chars_fact if plan.intent == "fact"
+                             else settings.prompt_chars_wide)
     trace.stage("llm")
+    q_llm = q_search
+    if parts:                                    # name every part, so a comparison is not misread
+        q_llm += "\nCác phần cần trả lời: " + "; ".join(f"({k}) {p}" for k, p in enumerate(parts, 1))
     try:
-        raw, labels = _call(llm_call, question, llm_in, lang=lang, style=plan.intent, max_claims=plan.claims)
+        raw, labels = _call(llm_call, q_llm, llm_in, lang=lang, style=plan.intent, max_claims=plan.claims)
     except Exception as e:                       # model timeout or outage: say so, never guess
         trace.add(f"LLM {settings.llm_model} không phản hồi", False, error=type(e).__name__)
         return refuse(RETRY_MESSAGE, kind="llm_unavailable")
+    from dr.models import llm as _llm_mod
     trace.add(f"LLM {settings.llm_model} ({'chọn câu nguyên văn theo mã' if llm_call is deps.llm_quotes else 'JSON có ràng buộc'}"
-              f" · {plan.intent})", True, raw_claims=len(raw.get("claims", [])), passages=len(llm_in))
+              f" · {plan.intent})", True, raw_claims=len(raw.get("claims", [])), passages=len(llm_in),
+              **(_llm_mod.last_stats() if llm_call in (getattr(_llm_mod, "answer_json", None),
+                                                       getattr(_llm_mod, "answer_quotes", None)) else {}))
 
     # ---- deterministic verification
     kept, dropped = verify.check(raw.get("claims", []), labels, sel_passages, question)
@@ -403,7 +471,7 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
         # when the reranker found a strong match, retry once on the top passages only.
         focus = llm_in[:FOCUSED_PASSAGES]
         try:
-            raw, labels = _call(llm_call, question, focus, lang=lang, style=plan.intent, max_claims=plan.claims)
+            raw, labels = _call(llm_call, q_llm, focus, lang=lang, style=plan.intent, max_claims=plan.claims)
         except Exception as e:
             trace.add(f"LLM {settings.llm_model} không phản hồi (lần thử lại)", False, error=type(e).__name__)
             raw, labels = {"claims": []}, {}
@@ -421,17 +489,20 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
     # loosely related line ("room" in "Data Room" vs "foreign ownership room").
     if (plan.relevance or other) and deps.rerank and kept and settings.relevance_min > 0:
         texts = [cl.text + " " + " ".join(c.quote for c in cl.citations) for cl in kept]
-        rel = deps.rerank(question, texts)
-        ovl = [intent.term_overlap(question, t) for t in texts]
+        rel = deps.rerank(q_search, texts)
+        ovl = [intent.term_overlap(q_search, t) for t in texts]
         ok = [(r >= settings.relevance_min and o >= settings.relevance_overlap) if other else
               (r >= settings.relevance_min or o >= settings.relevance_overlap) for r, o in zip(rel, ovl)]
         kept = [cl for cl, k in zip(kept, ok) if k]
         trace.add("Kiểm tra đúng trọng tâm câu hỏi", True, dropped=ok.count(False),
                   scores=[round(r, 3) for r in rel], overlap=[round(o, 2) for o in ovl])
-    if deps.nli:
+    # NLI is a secondary signal; a verbatim answer IS its quotes, so there is nothing to score
+    if (deps.nli or deps.nli_many) and kept and not verbatim:
         trace.stage("verify")
-        for cl in kept:
-            cl.nli = round(deps.nli(" ".join(c.quote for c in cl.citations), cl.text), 3)
+        pairs = [(" ".join(c.quote for c in cl.citations), cl.text) for cl in kept]
+        scores = deps.nli_many(pairs) if deps.nli_many else [deps.nli(a, b) for a, b in pairs]
+        for cl, sc in zip(kept, scores):
+            cl.nli = round(sc, 3)
         trace.add("NLI mDeBERTa (tín hiệu phụ)", True, scores=[cl.nli for cl in kept])
 
     # ---- gate 2 again on cited files, gate 4 again

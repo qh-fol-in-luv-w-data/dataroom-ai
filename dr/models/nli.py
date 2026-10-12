@@ -39,3 +39,18 @@ def entail(premise: str, hypothesis: str) -> float:
         with torch.no_grad():
             probs = torch.softmax(_model(**enc).logits[0].float(), -1)
         return float(probs[_entail_idx])
+
+
+def entail_many(pairs: list[tuple[str, str]]) -> list[float]:
+    """entail() for several (premise, hypothesis) pairs in one batch (one forward pass on the GPU)."""
+    import torch
+    if not pairs:
+        return []
+    with _lock:
+        _load()
+        enc = _tok([pr[:2000] for pr, _ in pairs], [h[:500] for _, h in pairs], truncation=True, max_length=512,
+                   padding=True, return_tensors="pt")
+        enc = {k: v.to(_model.device) for k, v in enc.items()}
+        with torch.no_grad():
+            probs = torch.softmax(_model(**enc).logits.float(), -1)
+        return [float(x) for x in probs[:, _entail_idx]]

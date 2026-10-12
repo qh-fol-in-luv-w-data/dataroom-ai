@@ -41,6 +41,10 @@ class Settings:
     # Only the sentences of those passages that the reranker scores highest are sent (prompt reading
     # is the slow half); 0 = send whole passages.
     max_sentences: int = int(_env("DR_MAX_SENTENCES", "14"))
+    # character budget of the passages sent to the model (≈3 characters per token for Vietnamese):
+    # a list question had reached 5,000 prompt tokens (18 s of prompt reading) through long table rows
+    prompt_chars_fact: int = int(_env("DR_PROMPT_CHARS_FACT", "3500"))
+    prompt_chars_wide: int = int(_env("DR_PROMPT_CHARS_WIDE", "7000"))
     # How the answer style is chosen: "prompt" = from the question (fact / summary / compare / list /
     # full text, dr/core/intent.py); "role" = BRD v1.4 BR-04 (no Investor.AI.Summarize -> quotes only).
     answer_mode: str = _env("DR_ANSWER_MODE", "prompt")
