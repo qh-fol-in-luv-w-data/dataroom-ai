@@ -283,6 +283,42 @@ Chất lượng sau khi tăng tốc: QA 9/11 (B-fx là lỗi đã biết; C-pric
 Hỏi chéo nhóm: 54/54 không rò rỉ, 30/30 câu nhạy cảm chuyển liên hệ, đối chứng 3/3. Đã thử qwen2.5:3b: chỉ đúng 8/11
 và hay trả về mỗi mã câu, nên giữ 7B. Muốn câu mới dưới 2 giây cần máy chủ GPU (prefill vài nghìn token/giây).
 
+## Độ chính xác cho người được phép (2026-10-12)
+
+`scripts/accuracy_eval.py` đo xem người **có quyền** có nhận đúng đáp án không, bằng model thật, mất 5–8 phút. Gồm:
+- 11 fact, mỗi fact hỏi theo 4 kiểu: câu gốc, không dấu, tiếng Anh, có lời mào đầu;
+- 6 câu hỏi nhiều vế (so sánh, hỏi nhiều chỉ tiêu cùng lúc), phải trả lời đủ mọi vế.
+
+`scripts/latency_profile.py` cho biết thời gian của từng bước.
+
+| Kiểu hỏi | Trước | Sau |
+|---|---|---|
+| Câu gốc | 10/11 | 10/11 |
+| Không dấu | 9/11 | 10/11 |
+| Tiếng Anh | 5/11 | **11/11** |
+| Có lời mào đầu | 8/11 | 9/11 |
+| Nhiều vế (đủ mọi vế) | 3/6 | 4/6 (9/13 vế) |
+| Thời gian trung vị mỗi câu | 10,3 s | **7,0 s** |
+
+Các thay đổi:
+- **Câu hỏi chính** (`intent.core_question`): bỏ phần mào đầu ("Chị Lan dặn tôi hỏi: …", "Hội đồng họp tuần sau. …") trước khi tìm và gửi cho model. Toàn bộ câu gốc vẫn đi qua lớp chặn tấn công, kiểm tra câu nhạy cảm, kiểm tra nhóm khác và nhật ký.
+- **Câu nhiều vế** (`intent.sub_questions`, kế hoạch `multi`): tìm và xếp hạng cả câu lẫn từng vế, gộp xen kẽ; model được báo rõ từng vế cần trả lời. Trên bộ đo, đoạn đáp án tới được model ở 9/13 vế, so với 7/13 khi chỉ tìm cả câu.
+- **Thuật ngữ Anh–Việt** (`intent.expand_en`): câu hỏi tiếng Anh được thêm thuật ngữ tiếng Việt tương ứng theo một bảng tra cố định khi tìm và xếp hạng. Không nhờ model dịch: thử dịch bằng qwen 7B thì bị lẫn chữ Trung và ra câu trả lời sai.
+- **Khôi phục dấu** (`dr/core/accents.py`): câu tiếng Việt gõ không dấu được thêm dấu bằng thống kê từ và cặp từ (thuật toán Viterbi), đúng khoảng 95% số từ. Bảng tần suất **chỉ học từ tài liệu chung**, nên không thể làm lộ từ ngữ chỉ có trong tài liệu của nhóm khác.
+- **Ngân sách đầu vào model:** cắt câu dài ở 400 ký tự; giới hạn 3.500 ký tự cho câu hỏi nhanh và 7.000 ký tự cho câu hỏi rộng; nguồn chỉ ghi tên file. Trước đó một câu liệt kê đã đẩy đầu vào lên 5.000 token, mất 18 giây chỉ để đọc.
+- **Reranker và NLI:** reranker chạy fp16 với độ dài 384 (nhanh hơn khoảng 12%, 5 đoạn đầu giống hệt cấu hình cũ). NLI chấm mọi ý trong một lượt và bỏ qua với câu trả lời nguyên văn.
+- **Trace ghi thêm cho bước LLM:** số token đọc và sinh, thời gian đọc và sinh, để biết chậm ở đâu.
+
+Đã thử nhưng không dùng:
+- flash attention của Ollama: chậm hơn trên M3 Pro (2,8 → 3,0 s mỗi câu);
+- gộp thứ hạng tìm kiếm và rerank (RRF) cho câu không dấu: không cải thiện;
+- dịch câu hỏi tiếng Anh bằng model 7B: bản dịch kém và sinh câu trả lời sai.
+
+Còn lại:
+- B-fx (tài liệu không ghi thẳng con số, model không tự suy diễn);
+- một câu có mào đầu bị lớp chặn coi là mạo danh;
+- 2 câu nhiều vế khó (hỏi 3 nhóm cùng lúc; so sánh bằng tiếng Anh).
+
 ## Kiểm thử red-team 1000 câu
 
 `scripts/redteam.py gen | run | report` sinh 1000 câu, chạy qua model thật và chấm bằng một bộ kiểm độc lập. Bộ kiểm lấy

@@ -1,6 +1,6 @@
 # Giải thích mã nguồn — Data Room AI (bản demo cục bộ)
 
-Tài liệu này giải thích từng file trong repo `dataroom-ai-demo`: file đó để làm gì, gồm những hàm chính nào, vì sao được thiết kế như vậy, và liên quan tới file nào khác. Nội dung được viết từ chính mã nguồn tại commit `bed70fc` (2026-10-09). Khi code đổi, cần cập nhật lại.
+Tài liệu này (cập nhật 2026-10-12) giải thích từng file trong repo `dataroom-ai-demo`: file đó để làm gì, gồm những hàm chính nào, vì sao được thiết kế như vậy, và liên quan tới file nào khác. Nội dung được viết từ chính mã nguồn tại commit `bed70fc` (2026-10-09). Khi code đổi, cần cập nhật lại.
 
 Cách đọc nhanh: đọc mục 1 và 2 để nắm bức tranh chung, rồi tra từng file ở các mục 4–7. Mục 8 giải thích từng thư viện và thành phần bên ngoài (phiên bản, dùng để làm gì, ở file nào).
 
@@ -169,6 +169,19 @@ Ghi chú chung: mọi mô tả dưới đây dựa trên mã nguồn hiện có;
 
 ---
 
+**Cập nhật 2026-10-12 – các bước mới trong `ask()`** (chạy sau bước che dữ liệu cá nhân, trước bước phân loại):
+- **Câu hỏi dùng để tìm (`q_search`):** lấy câu hỏi chính (`intent.core_question`). Nếu là tiếng Việt không dấu thì khôi phục dấu (`accents.restore`); nếu là tiếng Anh thì ghép thêm thuật ngữ tiếng Việt (`intent.expand_en`). Vector embedding được tính lại theo câu này. Tìm kiếm, rerank, chọn câu, LLM và kiểm tra trọng tâm đều dùng `q_search`. Lớp chặn, kiểm tra nhạy cảm, kiểm tra nhóm khác và nhật ký vẫn dùng câu đầy đủ.
+- **Câu nhiều vế (`parts`):**
+  - tìm cả câu (40 kết quả) và từng vế (mỗi vế 20 kết quả);
+  - rerank từng danh sách theo đúng câu hoặc vế của nó, rồi xếp xen kẽ để vế nào cũng có đoạn văn;
+  - bước chọn câu chấm mỗi câu theo điểm cao nhất giữa cả câu và các vế;
+  - LLM nhận thêm dòng "Các phần cần trả lời: (1) … (2) …".
+- **Ngân sách đầu vào:** câu dài bị cắt ở 400 ký tự (`MAX_SENTENCE_CHARS`, cắt tại ranh giới từ nên vẫn là chuỗi con của đoạn gốc). Tổng ký tự gửi model không vượt `DR_PROMPT_CHARS_FACT` (3.500) hoặc `DR_PROMPT_CHARS_WIDE` (7.000). Nguồn chỉ ghi tên file.
+- **NLI:** chấm mọi ý trong một lượt (`nli.entail_many`); bỏ qua khi trả lời nguyên văn.
+- **Trace của bước LLM:** ghi `prompt_tokens`, `prefill_ms`, `answer_tokens`, `decode_ms` (lấy từ `llm.last_stats()`).
+
+---
+
 ### `dr/core/gates.py`
 
 **Vai trò:** Hiện thực các cổng phân quyền (master plan v0.5 §3.3). Cổng 1 (RLS trên bản chép quyền), cổng 2 (kiểm tra trực tiếp với SharePoint dưới danh nghĩa người dùng), cổng 4 (vai trò, danh sách cấm, độ tươi nguồn quyền). Cổng 3 (tập thu hồi theo người dùng-nhóm) không nằm ở đây mà được áp bên trong bộ đọc dữ liệu của connector.
@@ -250,6 +263,31 @@ Ghi chú chung: mọi mô tả dưới đây dựa trên mã nguồn hiện có;
 **Cấu hình:** Không có biến riêng; `DR_MAX_PASSAGES`/`DR_MAX_SENTENCES` ghi đè số đoạn/câu cho loại `fact` (ở `answer.py`).
 
 ---
+
+**Cập nhật 2026-10-12 – thêm các hàm phục vụ độ chính xác:**
+- `core_question(question)`: lấy câu hỏi chính, bỏ phần mào đầu. Hai trường hợp được xử lý:
+  - dạng "… dặn tôi hỏi: <câu hỏi>" thì lấy phần sau dấu hai chấm cuối cùng, nếu phần đó là câu hỏi và không phải giờ kiểu `10:30`;
+  - nhiều câu thì chỉ giữ những câu có dạng hỏi.
+
+  Kết quả dùng để tìm kiếm và gửi cho LLM; câu đầy đủ vẫn đi qua lớp chặn tấn công, kiểm tra nhạy cảm, kiểm tra nhóm khác và nhật ký.
+- `sub_questions(question)`: tách câu hỏi nhiều vế.
+  - Tách theo dấu phẩy, chấm phẩy, "và", "and"; tách theo "với/with/versus" chỉ khi câu bắt đầu bằng "so sánh/compare".
+  - Mỗi vế phải có ít nhất 2 từ khóa, nếu không thì không tách. Vì vậy "Hợp đồng mua bán điện với EVN…" hay "Quyền và nghĩa vụ…" được giữ nguyên.
+- `PLANS["multi"]`: kế hoạch cho câu hỏi số liệu có nhiều vế (12 đoạn, 36 câu, tối đa 6 ý). Câu dạng `fact` có từ 2 vế trở lên được chuyển sang kế hoạch này.
+- `GLOSSARY`, `expand_en(question)`: bảng thuật ngữ IPO Anh–Việt cố định, ví dụ "arrangement fee" → "phí thu xếp", "foreign ownership room" → "room ngoại". Câu hỏi tiếng Anh được ghép thêm thuật ngữ tiếng Việt tương ứng (khớp cụm dài trước). Không dùng model để dịch.
+- `key_terms`, `term_overlap`: từ khóa của câu hỏi (bỏ dấu, bỏ từ dừng) và tỷ lệ từ khóa xuất hiện trong câu trả lời; dùng cho bước kiểm tra đúng trọng tâm.
+
+### `dr/core/accents.py` (mới, 2026-10-12)
+
+**Vai trò:** khôi phục dấu tiếng Việt cho câu hỏi gõ không dấu. Reranker và embedding hiểu kém tiếng Việt không dấu: hỏi "Dinh gia noi bo…" thì đoạn đáp án tụt xuống hạng 24–31.
+
+**Thành phần chính:**
+- `_build()`: đếm tần suất từng từ có dấu và từng cặp từ liền kề, gom theo dạng bỏ dấu. **Chỉ học từ các đoạn hiện hành của site COMMON**, tức tài liệu mọi nhà đầu tư đều đọc được. Nhờ vậy câu đã khôi phục không thể làm lộ từ ngữ chỉ có trong tài liệu của nhóm khác.
+- `unaccented(text)`: câu viết bằng chữ Latin, không có dấu tiếng Việt nào.
+- `restore(text)`: thuật toán Viterbi trên các dạng có dấu của từng từ (tối đa 6 dạng phổ biến nhất). Điểm = tần suất từ + tần suất cặp từ với từ đứng trước (trọng số 1,0). Từ không có trong bảng giữ nguyên như người dùng gõ; chữ hoa được giữ. Đo được khoảng 95% số từ đúng.
+- `reset()`: xóa bảng tần suất; gateway gọi sau mỗi lần nạp lại tài liệu.
+
+**Liên quan:** gọi từ `answer.ask()` khi câu hỏi tiếng Việt không có dấu.
 
 ### `dr/core/audience.py`
 
@@ -1570,6 +1608,25 @@ Lưu ý chung:
 2. Phần `--e2e N`: chọn ngẫu nhiên N câu tấn công, gửi qua toàn bộ luồng trả lời với tư cách nhà đầu tư `inv-b1`, **tắt lớp lọc đầu vào** và dùng LLM thật, để xem các lớp sâu hơn (RLS, kiểm tra trực tiếp, kiểm chứng trích dẫn) tự giữ được đến đâu. Một câu bị coi là rò rỉ nếu câu trả lời chứa bí mật của nhóm khác, trích file mà `inv-b1` không mở được, chứa mảnh system prompt, hoặc có ý không có trích dẫn.
 
 **Kết quả/đầu ra:** `logs/attack_eval.json` (thống kê, độ trễ, danh sách câu lọt và câu chặn nhầm, kết quả end-to-end). In bảng tỷ lệ và ví dụ.
+
+#### `scripts/accuracy_eval.py` (mới, 2026-10-12)
+- **Vai trò:** đo độ chính xác cho người **có quyền**: hỏi có ra đúng đáp án không. Bổ sung cho các bộ đo bảo mật, vốn chủ yếu chứng minh không rò rỉ.
+- **Cách chạy:** `.venv/bin/python scripts/accuracy_eval.py [--only fact|multi]`, mất khoảng 5–8 phút với model thật.
+- **Làm gì:**
+  - 11 fact, mỗi fact hỏi theo 4 kiểu: câu gốc, không dấu, tiếng Anh, có lời mào đầu vô hại;
+  - 6 câu hỏi nhiều vế, phải có đủ đáp án của mọi vế;
+  - bộ nhớ đệm LLM được xóa trước mỗi câu;
+  - câu nhạy cảm được chuyển liên hệ tính là đúng.
+- **Đầu ra:** điểm theo từng kiểu hỏi, thời gian trung vị và p90; chi tiết ghi vào `logs/accuracy_eval.json`.
+
+#### `scripts/latency_profile.py` (mới, 2026-10-12)
+- **Vai trò:** cho biết thời gian của một câu trả lời nằm ở bước nào.
+- **Cách chạy:** `.venv/bin/python scripts/latency_profile.py [--oid inv-ab] [--repeat 1]`.
+- **Làm gì:**
+  - nạp sẵn mọi model trước khi bấm giờ;
+  - chạy 10 câu đủ các kiểu (nhanh, tiếng Anh, liệt kê, tổng hợp, so sánh, nguyên văn, nhóm khác);
+  - đọc thời gian từng bước ghi trong trace.
+- **Đầu ra:** thời gian mỗi câu và thời gian trung bình của từng bước.
 
 #### `scripts/redteam.py`
 
