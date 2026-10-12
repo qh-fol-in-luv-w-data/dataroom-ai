@@ -63,6 +63,8 @@ STYLE = {
     "compare": ("so sánh từng bên được hỏi, mỗi ý nêu rõ bên nào và số liệu/điều khoản của bên đó, tối đa {n} ý; "
                 "bên nào tài liệu không nói tới thì không đoán."),
     "list": "liệt kê đầy đủ mọi mục tìm thấy trong tài liệu, mỗi mục một ý, tối đa {n} ý.",
+    "multi": ("câu hỏi gồm nhiều phần: trả lời đủ TỪNG phần, mỗi phần ít nhất một ý nêu rõ phần đó (ví dụ nhóm nào, "
+              "chỉ tiêu nào), tối đa {n} ý; phần nào tài liệu không nói tới thì bỏ qua, không đoán."),
 }
 
 QUOTE_SCHEMA = {
@@ -220,6 +222,16 @@ def clear_cache() -> None:
         _cache.clear()
 
 
+_stats = threading.local()
+
+
+def last_stats() -> dict:
+    """Token counts and timings of this thread's last model call ({} when it came from the memo)."""
+    v = getattr(_stats, "value", None) or {}
+    _stats.value = None
+    return v
+
+
 def _chat(system: str, prompt: str, schema: dict, timeout: float, max_tokens: int = 600) -> dict:
     # num_predict bounds the answer: a constrained-JSON generation that never closes would otherwise
     # run until the context is full (seen once in 1000 red-team questions: 300 s, then a timeout)
@@ -232,8 +244,12 @@ def _chat(system: str, prompt: str, schema: dict, timeout: float, max_tokens: in
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
     })
     r.raise_for_status()
+    d = r.json()
+    # how the time split between reading the prompt and writing the answer (shown in the trace)
+    _stats.value = {"prompt_tokens": d.get("prompt_eval_count"), "prefill_ms": int(d.get("prompt_eval_duration", 0) / 1e6),
+                    "answer_tokens": d.get("eval_count"), "decode_ms": int(d.get("eval_duration", 0) / 1e6)}
     try:
-        return json.loads(r.json()["message"]["content"])
+        return json.loads(d["message"]["content"])
     except json.JSONDecodeError:
         return {}
 

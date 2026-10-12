@@ -68,6 +68,8 @@ def _ingest_worker():
             S.last_ingest = (res + S.last_ingest)[:50]
             if res:
                 S.index.refresh()
+                from dr.core import accents
+                accents.reset()           # relearn accent frequencies from the updated shared site
         except Exception:
             log.exception("background ingest failed")
         finally:
