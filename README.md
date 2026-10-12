@@ -343,7 +343,15 @@ sự thật từ SharePoint (giả lập) chứ không tin hệ thống đang đ
 | So sánh nhiều nhóm | 40 |
 | Đổi quyền giữa chừng: rút khỏi nhóm, gắn nhãn Excluded, khóa tài khoản, gỡ vai trò (token cũ), nguồn quyền trễ | 30 |
 
-Kết quả lần chạy cuối (2026-10-09, sau khi huấn luyện lại lớp chặn):
+Kết quả lần chạy cuối (2026-10-12, sau đợt cải thiện độ chính xác):
+- **Bảo mật: 0/1000 câu có lỗ hổng, 0 lỗi.** Câu nhạy cảm không lọt câu nào; chặn tấn công 132/150.
+- **Độ chính xác cho người được phép:**
+  - fact hỏi tiếng Anh 39/63 → **63/63**;
+  - fact có lời mạo danh 38/63 → 40/63;
+  - fact câu gốc và không dấu 57/58 → 56/57 (chênh lệch do model không hoàn toàn ổn định).
+- **Câu được trả lời:** câu so sánh nhiều nhóm 4/40 → 17/40; câu kèm thông tin cá nhân của người hỏi 5/30 → 18/30. Bộ kiểm độc lập không thấy câu nào vượt quyền.
+
+Lần chạy 2026-10-09, sau khi huấn luyện lại lớp chặn:
 - **Bảo mật: 0/1000 câu có lỗ hổng, 0 lỗi kỹ thuật.** 5/5 kịch bản đổi quyền chặn đúng.
 - **Câu nhạy cảm:** 60/60 chuyển liên hệ.
 - **Chặn tấn công:** 132/150. 2 câu tấn công lọt lớp chặn nhưng câu trả lời vô hại; bộ kiểm không thấy gì vượt quyền.
