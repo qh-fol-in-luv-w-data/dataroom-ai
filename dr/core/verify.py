@@ -100,6 +100,8 @@ def check(raw_claims: list[dict], labels: dict[str, int], passages: dict[int, di
     q_union = set().union(*q_vals) if q_vals else set()
     kept: list[Claim] = []
     dropped: list[tuple[dict, str]] = []
+    given = norm(" ".join(p["text"] for p in passages.values()))
+    given_words = set(given.split())
     for rc in raw_claims:
         text = (rc.get("text") or "").strip()
         cits = rc.get("citations") or []
@@ -127,5 +129,25 @@ def check(raw_claims: list[dict], labels: dict[str, int], passages: dict[int, di
         if missing:
             dropped.append((rc, "con số trong câu trả lời không khớp câu trích"))
             continue
+        # a name the answer gives (an agency, a unit code) must be in its own quotes when the documents
+        # use it: a figure copied from one table row under another row's name passes the number check
+        quoted = norm(" ".join(g.quote for g in good))
+        # a code the question names (SH09, GJDC) that the documents use: the answer must come from a passage
+        # about it, not a figure from another unit's contract that happens to fit the sentence
+        named = [t for t in _CODES.findall(question) if t not in _CODE_STOP and norm(t) in given_words]
+        if named and not any(norm(t) in norm(passages[g.chunk_id]["text"]).split() for t in named for g in good):
+            dropped.append((rc, f"câu trích không thuộc tài liệu về {', '.join(named)}"))
+            continue
+        asked = norm(question).split()        # the subject the user named (SH09) may be left out of the quote
+        wrong = [t for t in _CODES.findall(text) if t not in _CODE_STOP and norm(t) in given_words
+                 and norm(t) not in quoted.split() and norm(t) not in asked]
+        if wrong:
+            dropped.append((rc, f"tên trong câu trả lời không có trong câu trích ({', '.join(wrong)})"))
+            continue
         kept.append(Claim(text, good))
     return kept, dropped
+
+
+_CODES = re.compile(r"\b(?=[A-Z0-9-]*[A-Z])[A-Z][A-Z0-9-]{1,}\b")       # EZ, GJDC, BNF, SH09, CTG-01
+_CODE_STOP = {"VAT", "VND", "USD", "CGI", "PR", "KOL", "KOLS", "IPO", "TP", "HCM", "SMS", "LCD", "OOH", "TVC", "BOD",
+              "NT", "HĐ", "CT", "QĐ", "TT", "PCCC", "MEP", "CEO", "FB", "GĐ", "KH", "DA", "PDF", "AI", "ID", "OK"}

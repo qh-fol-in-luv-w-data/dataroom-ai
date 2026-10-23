@@ -19,7 +19,7 @@ from unidecode import unidecode
 from dr import audit
 from dr.config import (BLOCKED_MESSAGE, NEUTRAL_REFUSAL, OUT_OF_SCOPE_MESSAGE, RETRY_MESSAGE, UNAVAILABLE_MESSAGE,
                        settings)
-from dr.core import accents, audience, gates, intent, verify
+from dr.core import accents, audience, conversation, gates, intent, tables, verify
 from dr.core.index import SearchIndex
 from dr.core import lang as lang_mod
 from dr.core import review
@@ -40,12 +40,13 @@ class Deps:
     embed_many: Callable | None = None     # batch embeddings (input guard scores parts of long questions)
     llm_quotes: Callable | None = None     # quote mode: model picks sentence ids, quotes are the sentences
     nli_many: Callable | None = None       # NLI for all claims in one batch
+    rewrite: Callable | None = None        # follow-up question -> standalone question (conversation context)
 
     @classmethod
     def real(cls) -> "Deps":
         from dr.models import embed, llm, nli, rerank
         return cls(embed.embed_query, rerank.rerank, llm.answer_json, nli.entail, embed_many=embed.embed_texts,
-                   llm_quotes=llm.answer_quotes, nli_many=nli.entail_many)
+                   llm_quotes=llm.answer_quotes, nli_many=nli.entail_many, rewrite=llm.rewrite_question)
 
 
 @dataclass
@@ -133,6 +134,16 @@ def document_chunks(oid: str, codes: list[str], files: list[str], limit: int = 4
     return [r[0] for r in rows]
 
 
+def sheet_chunks(oid: str, item_id: str, sheet: str, limit: int = 60) -> list[int]:
+    """All current chunks of one spreadsheet sheet, in reading order, that this user can read (RLS)."""
+    from dr.db import pg
+    with pg.as_principal(oid) as cur:
+        rows = cur.execute("SELECT c.chunk_id FROM chunks c JOIN items i ON i.item_id = c.item_id AND i.ctag = c.ctag "
+                           "WHERE c.item_id = %s AND c.locator LIKE %s ORDER BY c.ordinal LIMIT %s",
+                           (item_id, sheet.replace("%", r"\%").replace("_", r"\_") + "!%", limit)).fetchall()
+    return [r[0] for r in rows]
+
+
 _BOILERPLATE = re.compile(r"(^|[.!?]\s)\s*(pham vi chia se|phan loai|scope of sharing|classification)\s*:")
 
 
@@ -187,7 +198,10 @@ def focus_sentences(question: str, llm_in: list[dict], deps: Deps, trace: Trace,
     for i, p in enumerate(llm_in):
         kept = [s for (pi, j, s) in sents if pi == i and (pi, j) in keep]
         if kept:
-            out.append({**p, "text": "\n".join(kept)})
+            # a blank line between kept sentences: a clipped one has no final stop, and the prompt's
+            # line unwrapping would otherwise glue it to the next kept sentence (not adjacent in the
+            # document), giving a quote that fails verification although the answer was right
+            out.append({**p, "text": "\n\n".join(kept)})
     trace.add("Chọn câu liên quan trong các đoạn (rerank theo câu)", True, sentences=f"{len(keep)}/{len(sents)}",
               passages=len(out), chars=used)
     return out
@@ -233,7 +247,8 @@ def crop_for(page_ref: str | None, quote: str) -> dict | None:
 
 
 def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], question: str,
-        deps: Deps, scope_site: str | None = None, on_step: Callable | None = None) -> dict:
+        deps: Deps, scope_site: str | None = None, on_step: Callable | None = None,
+        history: list[conversation.Turn] | None = None) -> dict:
     trace = Trace(on_step=on_step)
     question = guard.strip_controls(question).strip()[:1000]
     lang = lang_mod.detect(question)
@@ -266,14 +281,39 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
         clean_q = guard.clean(question)
         qvec = deps.embed_query(clean_q) if deps.embed_query else None
         v = guard.inspect(question, qvec, deps.embed_many)
-        trace.add("Lớp đầu vào – chuẩn hóa, luật chống prompt injection, bộ phân loại", not v.blocked,
-                  rules=v.rules, score=v.score, normalized=v.changed)
-        if v.blocked:
+        recap_ok = bool(history) and conversation.is_recap(question) and not v.rules \
+            and bool(conversation.cited_chunks(history))
+        trace.add("Lớp đầu vào – chuẩn hóa, luật chống prompt injection, bộ phân loại", not v.blocked or recap_ok,
+                  rules=v.rules, score=v.score, normalized=v.changed, recap=recap_ok or None)
+        # "Tổng hợp lại" reads like prompt extraction to the classifier (0.8–0.9), but a recap never sends
+        # the question's words to the model (it re-reads cited chunks), so only a rule hit blocks it
+        if v.blocked and not recap_ok:
             return refuse(BLOCKED_MESSAGE, kind="input_blocked",
                            extra={"rules": v.rules, "score": v.score})
         question = clean_q
     else:
         qvec = deps.embed_query(question) if deps.embed_query else None
+    # ---- conversation context: "tổng hợp lại" re-reads what this conversation cited; a follow-up is
+    # rewritten into a standalone question (the rewrite passes the input guard like a typed question)
+    asked, recap_chunks, context_chunks = question, [], []
+    if history:
+        if conversation.is_recap(question) and conversation.cited_chunks(history):
+            recap_chunks = conversation.cited_chunks(history)
+            question = ("Tổng hợp các nội dung đã trao đổi: " if lang == "vi" else "Summary of what was discussed: ") + \
+                "; ".join(t.standalone for t in history)[:600]
+            trace.add("Tổng hợp cuộc trò chuyện → đọc lại các đoạn đã trích", True, turns=len(history),
+                      chunks=len(recap_chunks))
+        elif deps.rewrite and conversation.needs_context(question):
+            trace.stage("context")
+            rw = guard.strip_controls(deps.rewrite(question, conversation.context_text(history))).strip()[:500]
+            if rw and rw != question:
+                rvec = deps.embed_query(rw) if deps.embed_query else None
+                blocked = settings.input_guard and guard.inspect(rw, rvec, deps.embed_many).blocked
+                if not blocked:
+                    question, qvec = (guard.clean(rw) if settings.input_guard else rw), rvec
+            context_chunks = conversation.cited_chunks(history, last=1)
+            trace.add("Câu hỏi nối tiếp → viết lại theo ngữ cảnh cuộc trò chuyện", True,
+                      rewritten=question != asked, standalone=question[:200])
     # ---- a question about another investor group is answered from shared documents only
     other = audience.other_groups_only(oid, question)
 
@@ -327,6 +367,8 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
             r"noi (ve )?(noi dung )?gi|about what|what does", unidecode(question).lower()):
         plan = intent.PLANS["summary"]
         whole_doc = document_chunks(oid, codes, files_named)
+    if recap_chunks:
+        plan, whole_doc = intent.PLANS["summary"], recap_chunks
     parts = [glossed(p) for p in intent.sub_questions(q_core)] if not whole_doc and not plan.verbatim else []
     if parts and plan.intent == "fact":
         plan = intent.PLANS["multi"]
@@ -350,6 +392,8 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
         hits, have = [], set()
         for hs in part_hits.values():
             hits += [h for h in hs if h[0] not in have and not have.add(h[0])]
+        # a follow-up also considers what the previous answer cited (still filtered by RLS and reranked)
+        hits += [(c, 0.0) for c in context_chunks if c not in have and not have.add(c)]
         trace.add("Tìm kiếm lai BM25 + vector (RLS ngay trong câu truy vấn)", True, hits=len(hits),
                   parts=len(parts), **info)
     passages = gates.fetch_passages(oid, [cid for cid, _ in hits])
@@ -388,6 +432,20 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
             passages[c]["rerank"] = s
         order = [c for _, c in sorted(zip(scores, order), key=lambda x: -x[0])]
         trace.add("Rerank bge-reranker-v2-m3", True, top_score=round(max(scores), 3) if scores else None)
+
+    # ---- a question over several rows of a table (extreme, comparison, total) whose best match is a
+    # spreadsheet row: the whole sheet is read, not five scattered rows (RLS on every chunk as usual)
+    if not whole_doc and order and intent.TABLE_Q.search(unidecode(q_search).lower()):
+        top = passages[order[0]]
+        m = re.match(r"(.+?)!A\d+", top["locator"] or "")
+        if m:
+            ids = sheet_chunks(oid, top["item_id"], m.group(1))
+            if 1 < len(ids) <= 40:
+                passages.update(gates.fetch_passages(oid, [c for c in ids if c not in passages]))
+                ids = [c for c in ids if c in passages]
+                order = ids + [c for c in order if c not in set(ids)]
+                plan = intent.PLANS["table"]
+                trace.add("Câu hỏi trên bảng → đọc cả sheet", True, sheet=m.group(1), chunks=len(ids))
 
     # group by file, keep file order by best chunk
     files: list[str] = []
@@ -450,16 +508,27 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
     q_llm = q_search
     if parts:                                    # name every part, so a comparison is not misread
         q_llm += "\nCác phần cần trả lời: " + "; ".join(f"({k}) {p}" for k, p in enumerate(parts, 1))
-    try:
-        raw, labels = _call(llm_call, q_llm, llm_in, lang=lang, style=plan.intent, max_claims=plan.claims)
-    except Exception as e:                       # model timeout or outage: say so, never guess
-        trace.add(f"LLM {settings.llm_model} không phản hồi", False, error=type(e).__name__)
-        return refuse(RETRY_MESSAGE, kind="llm_unavailable")
-    from dr.models import llm as _llm_mod
-    trace.add(f"LLM {settings.llm_model} ({'chọn câu nguyên văn theo mã' if llm_call is deps.llm_quotes else 'JSON có ràng buộc'}"
-              f" · {plan.intent})", True, raw_claims=len(raw.get("claims", [])), passages=len(llm_in),
-              **(_llm_mod.last_stats() if llm_call in (getattr(_llm_mod, "answer_json", None),
-                                                       getattr(_llm_mod, "answer_quotes", None)) else {}))
+    # smallest / largest over the rows of a sheet: arithmetic, done on the rows themselves (the model
+    # copied the right figure under the wrong row's name); the answer cites the row and is verified as usual
+    det = None
+    if plan.intent == "table":
+        rows_in = [{"chunk_id": c, "text": sel_passages[c]["text"]} for c in selected]
+        det = tables.extreme(q_search, rows_in) or tables.compare(q_search, rows_in)
+    if det:
+        raw, labels = det
+        trace.add("Bảng: lớn nhất/nhỏ nhất hoặc so sánh tính trực tiếp trên các dòng (không qua LLM)", True,
+                  rows=len(raw["claims"]))
+    else:
+        try:
+            raw, labels = _call(llm_call, q_llm, llm_in, lang=lang, style=plan.intent, max_claims=plan.claims)
+        except Exception as e:                       # model timeout or outage: say so, never guess
+            trace.add(f"LLM {settings.llm_model} không phản hồi", False, error=type(e).__name__)
+            return refuse(RETRY_MESSAGE, kind="llm_unavailable")
+        from dr.models import llm as _llm_mod
+        trace.add(f"LLM {settings.llm_model} ({'chọn câu nguyên văn theo mã' if llm_call is deps.llm_quotes else 'JSON có ràng buộc'}"
+                  f" · {plan.intent})", True, raw_claims=len(raw.get("claims", [])), passages=len(llm_in),
+                  **(_llm_mod.last_stats() if llm_call in (getattr(_llm_mod, "answer_json", None),
+                                                           getattr(_llm_mod, "answer_quotes", None)) else {}))
 
     # ---- deterministic verification
     kept, dropped = verify.check(raw.get("claims", []), labels, sel_passages, question)
@@ -593,6 +662,7 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
     answer_text = "\n".join(c["text"] for c in claims_out)
     seq = audit.append(oid, "answer", {
         "question": question,
+        "asked": asked if asked != question else None,
         "allowed_chunks": n_allowed,
         "files_checked": len(chosen) + len(dropped_live),
         "files_dropped_live": len(dropped_live),
@@ -604,7 +674,8 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
     })
     trace.add("Ghi nhật ký (chuỗi hash)", True, audit_seq=seq)
     result = {"refused": False, "message": None, "claims": claims_out, "citations": cites, "trace": trace.steps,
-              "audit_seq": seq, "lang": lang, "mode": plan.intent, "verbatim": verbatim, "notice": notice}
+              "audit_seq": seq, "lang": lang, "mode": plan.intent, "verbatim": verbatim, "notice": notice,
+              "standalone_question": question if question != asked else None, "recap": bool(recap_chunks)}
     # ---- sensitive questions (BR-08): investors get the answer only after a reviewer approves it
     if topics and not is_staff and settings.sensitive_mode == "review":
         trace.add("Câu hỏi nhạy cảm → bản nháp chờ người duyệt", True, topics=topics)

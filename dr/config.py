@@ -23,6 +23,7 @@ class Settings:
 
     ollama_url: str = _env("DR_OLLAMA", "http://127.0.0.1:11434")
     llm_model: str = _env("DR_LLM", "qwen2.5:7b")
+    company: str = _env("DR_COMPANY", "Công ty Cổ phần Năng lượng Sao Mai")   # named in the answer prompts
     embed_model: str = _env("DR_EMBED", "bge-m3")
     rerank_model: str = _env("DR_RERANK", "BAAI/bge-reranker-v2-m3")
     nli_model: str = _env("DR_NLI", "MoritzLaurer/mDeBERTa-v3-base-xnli-multilingual-nli-2mil7")
@@ -55,6 +56,9 @@ class Settings:
     relevance_overlap: float = float(_env("DR_RELEVANCE_OVERLAP", "0.6"))
     llm_keep_alive: str = _env("DR_LLM_KEEP_ALIVE", "24h")    # keep the model loaded (Ollama unloads after 5 min)
     answer_cache: int = int(_env("DR_ANSWER_CACHE", "2000"))  # LLM outputs memoised by exact input; 0 = off
+    # the app ingests new/changed files in a background thread; turn off while scripts/ingest.py runs a bulk load
+    # (two ingesters on one GPU also crash Metal: PaddleOCR in the app next to the reranker)
+    background_ingest: bool = _env("DR_BACKGROUND_INGEST", "1") == "1"
     input_guard: bool = _env("DR_INPUT_GUARD", "1") == "1"   # layer 2: normalisation + injection rules + classifier
     mask_pii: bool = _env("DR_MASK_PII", "1") == "1"         # mask personal identifiers in questions, answers, audit
     rate_per_minute: int = int(_env("DR_RATE_MIN", "8"))
@@ -72,7 +76,11 @@ class Settings:
     # OCR: PaddleOCR-VL-1.6 served by mlx-vlm on the Apple GPU; PP-OCRv5 latin as fallback.
     ocr_server_url: str = _env("DR_OCR_SERVER", "http://127.0.0.1:8111/")
     ocr_vl_model: str = _env("DR_OCR_VL_MODEL", str(Path.home() / ".paddlex/official_models/PaddleOCR-VL-1.6"))
-    ocr_engine: str = _env("DR_OCR_ENGINE", "vl")  # vl | ppocr
+    ocr_engine: str = _env("DR_OCR_ENGINE", "vl")  # vl (PaddleOCR-VL) | vintern (Vintern-1B-v3.5) | ppocr
+    # Bulk-load speed: the second reader (PP-OCRv5 on every line, CPU) only marks numbers "chưa chắc";
+    # off = ~half the CPU time per page. Pages/images with fewer text boxes than this skip the VLM reader.
+    ocr_cross_check: bool = _env("DR_OCR_CROSSCHECK", "1") == "1"
+    ocr_min_text_boxes: int = int(_env("DR_OCR_MIN_TEXT_BOXES", "3"))
     ocr_max_pages: int = int(_env("DR_OCR_MAX_PAGES", "40"))  # per document, keeps big scanned prospectuses bounded
 
     @property

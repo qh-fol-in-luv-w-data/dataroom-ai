@@ -36,6 +36,8 @@ def sniff_type(data: bytes) -> str:
         return "png"
     if data[:3] == b"\xff\xd8\xff":
         return "jpg"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "webp"
     return "text"
 
 
@@ -67,8 +69,8 @@ def inspect(data: bytes, ext: str) -> SafetyResult:
                     return SafetyResult(False, "File Office được mã hóa", encrypted=True)
         except zipfile.BadZipFile:
             return SafetyResult(False, "File Office hỏng")
-    elif ext in ("png", "jpg", "jpeg"):
-        if kind not in ("png", "jpg"):
+    elif ext in ("png", "jpg", "jpeg", "jfif", "webp"):
+        if kind not in ("png", "jpg", "webp"):
             return SafetyResult(False, "Loại ảnh không khớp đuôi")
     elif ext in ("txt", "md", "csv", "html", "htm", "eml"):
         if kind in ("pdf", "ole", "zip"):

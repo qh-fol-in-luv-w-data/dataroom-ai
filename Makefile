@@ -27,7 +27,7 @@ pg-stop:
 	$(PY) -c "from dr.db import pg; pg.stop_cluster()"
 
 ocr-server:       ## PaddleOCR-VL-1.6 on the Apple GPU via mlx-vlm (keep running during ingest)
-	$(PY) -m mlx_vlm.server --model $(VL_DIR) --trust-remote-code --host 127.0.0.1 --port 8111
+	$(PY) -m mlx_vlm.server --model $(VL_DIR) --trust-remote-code --host 127.0.0.1 --port 8111 --max-num-seqs 1
 
 data:             ## generate the synthetic Sao Mai corpus (~500 files, all formats)
 	$(PY) scripts/gen_corpus.py --n 500 --seed 7 --out data/tenant

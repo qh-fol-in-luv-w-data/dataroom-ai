@@ -19,6 +19,7 @@ import tempfile
 import threading
 from dataclasses import dataclass, field
 
+import contextlib
 import hashlib
 import json
 import re
@@ -32,6 +33,7 @@ from dr.config import settings
 
 log = logging.getLogger("ocr")
 _lock = threading.Lock()
+PDFIUM = threading.RLock()     # pdfium is not thread-safe: every use of it in the ingest path holds this
 _vl = None
 
 
@@ -67,7 +69,9 @@ def _vl_pipeline():
     global _vl
     if _vl is None:
         from paddleocr import PaddleOCRVL
-        _vl = PaddleOCRVL(use_doc_orientation_classify=False, use_doc_unwarping=False,
+        # chart recognition on: a chart region comes back as its data table (35/35 values on the labelled
+        # test charts, ~3 s a chart; Vintern-1B read 26/35)
+        _vl = PaddleOCRVL(use_doc_orientation_classify=False, use_doc_unwarping=False, use_chart_recognition=True,
                           vl_rec_backend="mlx-vlm-server", vl_rec_server_url=settings.ocr_server_url,
                           vl_rec_api_model_name=settings.ocr_vl_model)
     return _vl
@@ -114,11 +118,16 @@ def cross_check(text: str, lines) -> tuple[list[str], int]:
 def _page_images(path: str) -> list[Image.Image]:
     if path.lower().endswith(".pdf"):
         import pypdfium2 as pdfium
-        pdf = pdfium.PdfDocument(path)
-        out = []
-        for page in pdf:
-            scale = min(200 / 72, 2400 / page.get_width())   # ~200 dpi, capped
-            out.append(page.render(scale=scale).to_pil())
+        with PDFIUM:
+            pdf = pdfium.PdfDocument(path)
+            out = []
+            try:
+                for page in pdf:
+                    scale = min(200 / 72, 2400 / page.get_width())   # ~200 dpi, capped
+                    out.append(page.render(scale=scale).to_pil())
+                    page.close()
+            finally:
+                pdf.close()
         return out
     img = Image.open(path)
     img.load()
@@ -151,6 +160,8 @@ def _vl_page(png: str, n: int) -> OcrPage:
                 content = _html_table_to_text(content)
             elif label == "seal":
                 content = f"[Con dấu: {content}]"
+            elif label == "chart" and content.strip():
+                content = "Biểu đồ (ảnh, số đọc bằng PaddleOCR-VL):\n" + _html_table_to_text(content).strip()
             if content.strip():
                 p.blocks.append(OcrBlock(label, content.strip()))
     return p
@@ -161,31 +172,79 @@ def ocr_file(path: str, clean: bool = True) -> list[OcrPage]:
     from dr.ingest import preprocess
 
     key = hashlib.sha1(Path(path).read_bytes()).hexdigest()
-    use_vl = settings.ocr_engine == "vl" and vl_available()
+    use_vl = settings.ocr_engine == "vl"
+    if use_vl and not vl_available():
+        # no silent fallback to the weaker latin reader: the item fails with the reason and is retried later
+        raise RuntimeError(f"OCR server PaddleOCR-VL chưa chạy ({settings.ocr_server_url}): chạy `make ocr-server`")
+    use_vintern = settings.ocr_engine == "vintern"
+    # the same picture is often in several files (copies in other folders, a logo in every docx):
+    # its OCR result is kept per (content hash, engine, clean) and read back instead of OCR-ing it again
+    done = settings.data_dir / "cache" / "ocr" / key / f"pages-{settings.ocr_engine}-c-{int(clean)}.json"  # c: with charts
+    def load(f: Path) -> list[OcrPage]:
+        return [OcrPage(page=p["page"], blocks=[OcrBlock(**b) for b in p["blocks"]], engine=p["engine"],
+                        steps=p["steps"], doubt=p["doubt"], numbers=p["numbers"], key=key)
+                for p in json.loads(f.read_text(encoding="utf-8"))]
+
+    def save(pages: list[OcrPage]) -> None:
+        done.write_text(json.dumps([{"page": p.page, "blocks": [{"label": b.label, "text": b.text} for b in p.blocks],
+                                     "engine": p.engine, "steps": p.steps, "doubt": p.doubt, "numbers": p.numbers}
+                                    for p in pages], ensure_ascii=False), encoding="utf-8")
+
+    if done.exists():
+        return load(done)
+    before_charts = done.with_name(f"pages-{settings.ocr_engine}-{int(clean)}.json")
+    if use_vintern and before_charts.exists():
+        # read before chart reading existed: keep its text, only add the charts of each page
+        from dr.ingest import charts
+        pages = load(before_charts)
+        for page, img in zip(pages, _page_images(path)):
+            page.blocks += [OcrBlock("chart", t) for t in charts.read(img.convert("RGB"))]
+        save(pages)
+        return pages
     pages = []
-    with _lock:  # the pipelines are not thread-safe
+    # PaddleOCR-VL is one pipeline: one page at a time. With Vintern the CPU clean-up (preprocess, own lock)
+    # and the GPU reader (vintern, own lock) overlap across workers instead of waiting for each other.
+    with (contextlib.nullcontext() if use_vintern else _lock):
+        if done.exists():                     # another worker read the same picture while this one waited
+            return ocr_file(path, clean)
         for n, img in enumerate(_page_images(path), start=1):
-            prep = preprocess.prepare(img) if clean else preprocess.Prepared(img.convert("RGB"))
+            cross = settings.ocr_cross_check or not (use_vintern or use_vl)
+            prep = preprocess.prepare(img, with_lines=cross) if clean else preprocess.Prepared(img.convert("RGB"))
             if not clean:
                 prep.lines = preprocess.read_lines(np.asarray(prep.image))
             page = None
-            if use_vl:
+            if use_vl and 0 <= prep.text_boxes < settings.ocr_min_text_boxes:
+                page = OcrPage(page=n, engine="PaddleOCR-VL-1.6")      # a photo / render without text
+            elif use_vl:
                 with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
                     prep.image.save(f.name)
                 try:
-                    page = _vl_page(f.name, n)
-                except Exception:
-                    log.exception("PaddleOCR-VL failed on page %s, falling back to PP-OCRv5", n)
+                    page = _vl_page(f.name, n)       # a failure fails the item: no other reader is used
                 finally:
                     os.unlink(f.name)
+            if use_vintern:
+                # no fallback: when Vintern is the chosen reader a failure fails the item (status 'error'
+                # with the reason), it is never silently read by another model
+                from dr.ingest import vintern
+                if 0 <= prep.text_boxes < settings.ocr_min_text_boxes:
+                    text = ""                     # a photo / render without text: nothing for the reader
+                else:
+                    sparse = 0 <= prep.text_boxes < 40          # a banner or slide, not a dense page
+                    text = vintern.markdown_tables_to_text(vintern.read(prep.image, sparse=sparse))
+                page = OcrPage(page=n, engine="Vintern-1B-v3.5",
+                               blocks=[OcrBlock("text", t.strip()) for t in re.split(r"\n\s*\n", text) if t.strip()])
+                from dr.ingest import charts       # charts drawn on the page: read again as data tables
+                page.blocks += [OcrBlock("chart", t) for t in charts.read(prep.image)]
             if page is None:      # second reader alone (digits fine, Vietnamese diacritics weak)
                 page = OcrPage(page=n, engine="PP-OCRv5-latin",
                                blocks=[OcrBlock("text", ln.text) for ln in prep.lines])
             page.steps = prep.steps
-            page.doubt, page.numbers = cross_check(page.text, prep.lines) if use_vl else ([], 0)
+            page.doubt, page.numbers = cross_check(page.text, prep.lines) if (use_vl or use_vintern) and prep.lines \
+                else ([], 0)
             page.key = key
             _cache(key, n, prep.image, prep.lines)
             pages.append(page)
+    save(pages)
     return pages
 
 

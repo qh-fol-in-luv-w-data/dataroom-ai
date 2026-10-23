@@ -14,6 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from dr.config import settings  # noqa: E402
 from dr.connector.sync import Connector  # noqa: E402
 from dr.db import pg  # noqa: E402
 from dr.ingest import ocr, pipeline  # noqa: E402
@@ -24,6 +25,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--workers", type=int, default=3)
     ap.add_argument("--only", nargs="*")
+    ap.add_argument("--shard", default="0/1", help="i/n: this process takes 1/n of the pending items (run n of them)")
     a = ap.parse_args(argv)
     logging.basicConfig(level=logging.WARNING)
     pg.ensure_cluster()
@@ -31,7 +33,7 @@ def main(argv=None) -> int:
     conn = Connector(tenant)
     ch = conn.full_resync()
     print(f"Đồng bộ: {len(tenant.items)} tài liệu, {len(tenant.users)} người dùng, {len(ch['items_changed'])} mục mới/đổi")
-    if not ocr.vl_available():
+    if settings.ocr_engine == "vl" and not ocr.vl_available():
         print("⚠ OCR server (PaddleOCR-VL/MLX) chưa chạy — trang scan sẽ dùng PP-OCRv5 (kém tiếng Việt). "
               "Chạy `make ocr-server` ở terminal khác để có chất lượng tốt nhất.")
     t0 = time.time()
@@ -41,7 +43,8 @@ def main(argv=None) -> int:
         def progress(done, total, r):
             extra = f"{r.get('chunks', '')} đoạn, {r.get('seconds', '')}s" if r["status"] == "indexed" else r.get("reason", "")
             print(f"[{done}/{total}] {r['status']:8} {r['item_id']}  {extra}", flush=True)
-        res = pipeline.ingest_pending(tenant, workers=a.workers, progress=progress)
+        si, sn = (int(x) for x in a.shard.split("/"))
+        res = pipeline.ingest_pending(tenant, workers=a.workers, progress=progress, shard=(si, sn))
     st = Counter(r["status"] for r in res)
     with pg.admin() as c:
         n_chunks = c.execute("SELECT count(*) FROM chunks WHERE is_current").fetchone()[0]

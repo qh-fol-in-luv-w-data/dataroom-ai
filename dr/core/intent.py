@@ -55,7 +55,13 @@ PLANS = {
     "full": Plan("full", 10, 6, 40, 8, True, False),
     # several facts or a comparison in one question: each part is searched and ranked on its own
     "multi": Plan("multi", 12, 3, 36, 6, False, False),
+    # a comparison / extreme / total over a spreadsheet: the whole sheet is read, many chunks from one file
+    "table": Plan("table", 30, 30, 48, 6, False, False),
 }
+
+# questions that need several rows of one table at once (dr/core/answer.py reads the whole sheet)
+TABLE_Q = re.compile(r"\b(thap nhat|cao nhat|lon nhat|nho nhat|re nhat|dat nhat|nhieu nhat|it nhat|so sanh|xep hang|"
+                     r"tong cong|tong gia tri|tong so|chenh lech|lowest|highest|cheapest|largest|smallest|compare|total)\b")
 
 
 def classify(question: str) -> str:

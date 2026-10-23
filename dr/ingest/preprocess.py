@@ -53,6 +53,7 @@ class Prepared:
     image: Image.Image
     steps: list[str] = field(default_factory=list)
     lines: list[Line] = field(default_factory=list)
+    text_boxes: int = -1       # text regions the detector found (-1: not measured)
 
 
 # ------------------------------------------------------------------ geometry / photometry
@@ -170,17 +171,18 @@ def orientation(rgb: np.ndarray) -> int:
     return (base + flip) % 360
 
 
-def skew_angle(rgb: np.ndarray) -> float:
+def skew_angle(rgb: np.ndarray, polys: list[np.ndarray] | None = None) -> float:
     angles = []
-    for p in _detect(rgb):
+    for p in (_detect(rgb) if polys is None else polys):
         (x0, y0), (x1, y1) = p[0], p[1]
         if x1 - x0 > 80:
             angles.append(np.degrees(np.arctan2(y1 - y0, x1 - x0)))
     return float(np.median(angles)) if len(angles) >= 3 else 0.0
 
 
-def read_lines(rgb: np.ndarray) -> list[Line]:
-    polys = sorted(_detect(rgb), key=lambda p: (round(float(p[:, 1].mean()) / 20), float(p[:, 0].min())))
+def read_lines(rgb: np.ndarray, polys: list[np.ndarray] | None = None) -> list[Line]:
+    polys = sorted(_detect(rgb) if polys is None else polys,
+                   key=lambda p: (round(float(p[:, 1].mean()) / 20), float(p[:, 0].min())))
     crops, boxes = _crops(rgb, polys)
     return [Line(t, s, b) for (t, s), b in zip(_recognise(crops), boxes) if t.strip()]
 
@@ -209,9 +211,13 @@ def prepare(img: Image.Image, with_lines: bool = True) -> Prepared:
             # np.rot90 turns counter-clockwise: rotate back by the detected clockwise angle
             rgb = rotate(rgb, rot)
             steps.append(f"xoay {rot}°")
-        ang = skew_angle(rgb)
+        polys = _detect(rgb)                  # one detection for the skew and, if the page stays, the lines
+        ang = skew_angle(rgb, polys)
         if 0.4 < abs(ang) < 15:
             rgb = rotate(rgb, ang)
             steps.append(f"chỉnh nghiêng {ang:+.1f}°")
-        lines = read_lines(rgb) if with_lines else []
-    return Prepared(Image.fromarray(rgb), steps, lines)
+            polys = None
+        if polys is None:
+            polys = _detect(rgb)
+        lines = read_lines(rgb, polys) if with_lines else []
+    return Prepared(Image.fromarray(rgb), steps, lines, len(polys))

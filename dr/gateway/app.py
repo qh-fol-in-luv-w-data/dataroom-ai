@@ -18,12 +18,13 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from dr import audit
 from dr.config import RATE_MESSAGE, settings
 from dr.connector.sync import Connector
 from dr.core import answer as answer_mod
+from dr.core import conversation
 from dr.core.index import SearchIndex
 from dr.core.pgindex import make_index
 from dr.db import pg
@@ -117,7 +118,8 @@ async def lifespan(app: FastAPI):
     S.index.refresh()
     S.stop.clear()
     threading.Thread(target=S.connector.run_forever, args=(S.stop, _on_changes), daemon=True).start()
-    threading.Thread(target=_ingest_worker, daemon=True).start()
+    if settings.background_ingest:
+        threading.Thread(target=_ingest_worker, daemon=True).start()
     threading.Thread(target=_warm_models, daemon=True).start()
     S.ingest_q.put("go")
     yield
@@ -245,6 +247,15 @@ def me(claims: dict = Depends(current)):
 class ChatIn(BaseModel):
     question: str
     scope_site: str | None = None
+    conversation_id: str | None = Field(None, max_length=64)   # turns are kept server-side (dr/core/conversation.py)
+
+
+def _ask(claims: dict, body: ChatIn, on_step=None) -> dict:
+    turns = conversation.history(claims["oid"], body.conversation_id)
+    r = answer_mod.ask(S.tenant, S.index, claims["oid"], claims["roles"], body.question, S.deps,
+                       body.scope_site, on_step=on_step, history=turns)
+    conversation.remember(claims["oid"], body.conversation_id, body.question, r)
+    return r
 
 
 def _chat_precheck(claims: dict) -> None:
@@ -274,8 +285,7 @@ async def chat_stream(body: ChatIn, claims: dict = Depends(current)):
                 emit({"stage": "queue"})
                 ratelimit.limiter.slots.acquire()
             try:
-                r = answer_mod.ask(S.tenant, S.index, claims["oid"], claims["roles"], body.question, S.deps,
-                                   body.scope_site, on_step=emit)
+                r = _ask(claims, body, on_step=emit)
             finally:
                 ratelimit.limiter.slots.release()
             emit({"result": _with_crop_tickets(r, claims["oid"])})
@@ -301,8 +311,7 @@ async def chat(body: ChatIn, claims: dict = Depends(current)):
 
     def run():
         with ratelimit.limiter.slots:     # bounded concurrent LLM work across all users
-            return answer_mod.ask(S.tenant, S.index, claims["oid"], claims["roles"], body.question, S.deps,
-                                  body.scope_site)
+            return _ask(claims, body)
     return _with_crop_tickets(await run_in_threadpool(run), claims["oid"])
 
 

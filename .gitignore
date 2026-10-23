@@ -13,3 +13,7 @@ data/eval/
 data/cache/
 data/m365.json
 data/.sp_token.json
+data/sp_download/
+data/AI Data Room/
+data/ctg/
+pgdata_ctg/

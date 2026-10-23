@@ -27,7 +27,7 @@ import re
 import sys
 import time
 from pathlib import Path
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, unquote, urlparse
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -42,6 +42,7 @@ CACHE = ROOT / "data" / ".sp_token.json"
 SCOPES = "Files.ReadWrite.All Sites.ReadWrite.All Sites.Manage.All offline_access"
 CHOICES = ["Allowed", "OnPremOnly", "Excluded"]
 SMALL = 4 * 1024 * 1024
+_token_lock = __import__("threading").RLock()
 
 
 class DeviceLogin:
@@ -61,6 +62,10 @@ class DeviceLogin:
         self.cache.chmod(0o600)
 
     def token(self) -> str:
+        with _token_lock:              # parallel uploads: one refresh, not eight
+            return self._token()
+
+    def _token(self) -> str:
         if self.access and self.exp - 120 > time.time():
             return self.access
         if self.refresh:
@@ -154,10 +159,145 @@ def upload(g: Graph, drive_id: str, rel: str, data: bytes) -> dict:
     return out
 
 
+def _retry(fn, what: str, tries: int = 8):
+    """Graph throttles bulk uploads (429/503 with Retry-After); network blips happen on long runs."""
+    r = None
+    for i in range(tries):
+        try:
+            r = fn()
+        except httpx.HTTPError:
+            if i == tries - 1:
+                raise
+            time.sleep(min(5 * 2 ** i, 120))
+            continue
+        if r.status_code in (429, 503, 504) and i < tries - 1:
+            time.sleep(int(r.headers.get("Retry-After") or min(5 * 2 ** i, 120)))
+            continue
+        return r
+    raise GraphError(r.status_code if r is not None else 0, r.text if r is not None else "", what)
+
+
+def upload_file(g: Graph, drive_id: str, rel: str, path: Path) -> dict:
+    """Like upload(), from disk: big files go up 10 MB at a time without being read whole."""
+    size = path.stat().st_size
+    if size <= SMALL:
+        data = path.read_bytes()
+        r = _retry(lambda: g.request("PUT", f"drives/{drive_id}/root:/{quote(rel)}:/content", content=data,
+                                     headers={"Content-Type": "application/octet-stream"}), rel)
+        if r.status_code not in (200, 201):
+            raise GraphError(r.status_code, r.text, rel)
+        return r.json()
+    s = _retry(lambda: g.request("POST", f"drives/{drive_id}/root:/{quote(rel)}:/createUploadSession",
+                                 json={"item": {"@microsoft.graph.conflictBehavior": "replace"}}), rel)
+    if s.status_code != 200:
+        raise GraphError(s.status_code, s.text, rel)
+    url, chunk, out = s.json()["uploadUrl"], 10 * 1024 * 1024, None   # multiple of 320 KiB
+    with open(path, "rb") as fh:
+        for i in range(0, size, chunk):
+            part = fh.read(chunk)
+            r = _retry(lambda: g.http.put(url, content=part, headers={
+                "Content-Range": f"bytes {i}-{i + len(part) - 1}/{size}", "Content-Length": str(len(part))}), rel)
+            if r.status_code not in (200, 201, 202):
+                raise GraphError(r.status_code, r.text, rel)
+            out = r.json()
+    return out
+
+
+def show_library(g: Graph, drive_id: str) -> None:
+    top = list(g.pages(f"drives/{drive_id}/root/children", params={"$select": "id,name,size,folder,file"}))
+    for x in top:
+        cnt = x.get("folder", {}).get("childCount")
+        print(f"  {'[thư mục]' if 'folder' in x else '[file]'} {x['name']}  {x.get('size', 0) / 2**20:,.1f} MB"
+              + (f"  ({cnt} mục con)" if cnt is not None else ""))
+    print(f"{len(top)} mục ở cấp đầu, tổng {sum(x.get('size', 0) for x in top) / 2**20:,.0f} MB")
+
+
+def wipe_library(g: Graph, drive_id: str) -> int:
+    """Delete every top-level item; deleted items go to the site recycle bin (restorable 93 days)."""
+    n = 0
+    for x in list(g.pages(f"drives/{drive_id}/root/children", params={"$select": "id,name"})):
+        r = _retry(lambda: g.request("DELETE", f"drives/{drive_id}/items/{x['id']}"), x["name"])
+        if r.status_code not in (200, 204):
+            raise GraphError(r.status_code, r.text, f"delete {x['name']}")
+        n += 1
+        print(f"  đã xóa {x['name']}", flush=True)
+    return n
+
+
+MAX_PATH = 400      # SharePoint: the decoded path of a file, from /sites/... to the extension
+
+
+def shorten(rel: str, limit: int) -> str:
+    """A path within the limit. Paths already within it are unchanged; otherwise folder names longer
+    than 30 characters are cut to 28 + '~' (deepest first), then to 16 + '~', and only if that is
+    not enough the end of the file name is cut (its extension kept)."""
+    parts = rel.split("/")
+    for keep in (28, 16):
+        for i in sorted(range(len(parts) - 1), key=lambda k: -k):
+            if len("/".join(parts)) <= limit:
+                return "/".join(parts)
+            if len(parts[i]) > keep + 2:
+                parts[i] = parts[i][:keep].rstrip(". ") + "~"
+    over = len("/".join(parts)) - limit
+    if over > 0:
+        stem, dot, ext = parts[-1].rpartition(".")
+        stem = stem if dot else parts[-1]
+        parts[-1] = stem[:max(8, len(stem) - over - 1)].rstrip(". ") + "~" + (dot + ext if dot else "")
+    return "/".join(parts)
+
+
+def upload_tree(g: Graph, drive_id: str, src: Path, prefix: str = "", workers: int = 8,
+                site_path: str = "") -> int:
+    """Upload every file under src keeping its folders, several at a time: most files are small, so one
+    at a time is bound by the request round trip (~1 MB/s), not bandwidth. Progress is kept in
+    src/_sp_uploaded.json, so a re-run only sends what is missing; a failed file is retried next run."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    state_f = src / "_sp_uploaded.json"
+    state = json.loads(state_f.read_text(encoding="utf-8")) if state_f.exists() else {}
+    files = sorted(p for p in src.rglob("*") if p.is_file() and p.name != ".DS_Store"
+                   and not (p.parent == src and p.name.startswith("_")))
+    todo = [p for p in files if state.get(p.relative_to(src).as_posix()) != p.stat().st_size]
+    print(f"{len(files)} file ({sum(p.stat().st_size for p in files) / 2**30:.1f} GB), đã có {len(files) - len(todo)}, "
+          f"còn {len(todo)} ({sum(p.stat().st_size for p in todo) / 2**30:.1f} GB) · {workers} luồng", flush=True)
+    lock = threading.Lock()
+    done, sent, failed, t0 = 0, 0, [], time.time()
+
+    def one(p: Path) -> tuple[str, int]:
+        rel = p.relative_to(src).as_posix()
+        # SharePoint refuses " * : < > ? \\ | in names and names ending with a dot or space
+        safe = "/".join(re.sub(r'["*:<>?\\|]', "_", part).rstrip(". ") or "_" for part in rel.split("/"))
+        upload_file(g, drive_id, f"{prefix}{shorten(safe, MAX_PATH - len(site_path) - len(prefix))}", p)
+        return rel, p.stat().st_size
+
+    with ThreadPoolExecutor(workers) as ex:
+        futs = {ex.submit(one, p): p for p in todo}
+        for f in as_completed(futs):
+            try:
+                rel, size = f.result()
+            except Exception as e:
+                failed.append(futs[f].relative_to(src).as_posix())
+                print(f"  LỖI {futs[f].name}: {str(e)[:200]}", flush=True)
+                continue
+            with lock:
+                state[rel] = size
+                done, sent = done + 1, sent + size
+                if done % 50 == 0:
+                    state_f.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+                    el = max(time.time() - t0, 1)
+                    print(f"  {len(files) - len(todo) + done}/{len(files)}  ·  {sent / 2**30:.2f} GB  ·  "
+                          f"{sent / el / 2**20:.1f} MB/s  ·  {done / el * 60:.0f} file/phút", flush=True)
+    state_f.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+    print(f"Xong: tải mới {done} file, {len(state)}/{len(files)} file đã có trên SharePoint"
+          + (f", lỗi {len(failed)} (chạy lại lệnh để thử lại)" if failed else ""))
+    return done
+
+
 def main(argv=None, http: httpx.Client | None = None) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--tenant", required=True)
-    ap.add_argument("--client-id", required=True)
+    ap.add_argument("--tenant", help="tenant id or domain (default: tenant_id of --m365-config)")
+    ap.add_argument("--client-id", help="app id (default: the one the cached sign-in in --token-cache was made with)")
+    ap.add_argument("--m365-config", default=str(ROOT / "data" / "m365.json"))
     ap.add_argument("--site", help="https://<tenant>.sharepoint.com/sites/<site>")
     ap.add_argument("--list-sites", action="store_true", help="sign in and list the sites you can use")
     ap.add_argument("--library", help="upload into this document library (created if missing) instead of the default one")
@@ -167,8 +307,20 @@ def main(argv=None, http: httpx.Client | None = None) -> int:
                     help="delete anonymous ('Anyone') and organisation-wide links found by --links "
                          "(specific-people links and normal permissions are kept); needs --yes")
     ap.add_argument("--yes", action="store_true")
+    ap.add_argument("--show", action="store_true", help="list what the library holds now")
+    ap.add_argument("--wipe", action="store_true", help="delete everything in the library (recycle bin); needs --yes")
+    ap.add_argument("--src", help="upload this folder tree instead of the demo tenant (e.g. 'data/AI Data Room')")
+    ap.add_argument("--token-cache", default=str(CACHE), help="where the sign-in refresh token is cached")
+    ap.add_argument("--workers", type=int, default=8, help="parallel uploads for --src")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args(argv)
+    # ids from the local config / cached sign-in, so the command line carries none
+    if not a.tenant and Path(a.m365_config).exists():
+        a.tenant = json.loads(Path(a.m365_config).read_text(encoding="utf-8")).get("tenant_id")
+    if not a.client_id and Path(a.token_cache).exists():
+        a.client_id = json.loads(Path(a.token_cache).read_text()).get("client_id")
+    if not a.tenant or not a.client_id:
+        ap.error("--tenant and --client-id are required (no m365 config / cached sign-in found)")
     if a.list_sites:
         http = http or httpx.Client(timeout=60, follow_redirects=True)
         g = Graph(DeviceLogin(a.tenant, a.client_id, http).token, http)
@@ -194,6 +346,21 @@ def main(argv=None, http: httpx.Client | None = None) -> int:
         if a.revoke_links and SHARES.exists():
             SHARES.unlink()                      # the local copy of the (now dead) public URLs
         return 0 if not a.revoke_links or all(f["revoked"] for f in found if f["broad"]) else 1
+    if a.show or a.wipe or a.src:
+        if a.wipe and not a.yes:
+            ap.error("--wipe deletes the library's content on the real tenant: add --yes")
+        http = http or httpx.Client(timeout=300, follow_redirects=True)
+        g = Graph(DeviceLogin(a.tenant, a.client_id, http, Path(a.token_cache)).token, http)
+        _, drive_id, _, prefix = site_and_drive(g, a.site, a.library)
+        print(f"Thư viện: {a.library or '(mặc định)'} trên {a.site}")
+        show_library(g, drive_id)
+        if a.wipe:
+            print(f"Đã xóa {wipe_library(g, drive_id)} mục (vào thùng rác của site)")
+        if a.src:
+            lib_url = g.get(f"drives/{drive_id}", params={"$select": "webUrl"})["webUrl"]
+            site_path = unquote(urlparse(lib_url).path).rstrip("/") + "/"     # /sites/DSA/DataRoom AI Demo/
+            upload_tree(g, drive_id, Path(a.src), prefix, a.workers, site_path)
+        return 0
     t = json.loads((TEN / "tenant.json").read_text(encoding="utf-8"))
     items = [i for i in t["items"] if not i.get("malware") and not i.get("encrypted")]
     skipped = [i["name"] for i in t["items"] if i.get("malware") or i.get("encrypted")]

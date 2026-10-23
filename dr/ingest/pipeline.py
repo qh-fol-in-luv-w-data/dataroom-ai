@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import time
+import zlib
 from concurrent.futures import ThreadPoolExecutor
 
 from dr.db import pg
@@ -121,11 +122,30 @@ def pending_items() -> list[str]:
     with pg.admin() as c:
         return [r[0] for r in c.execute(
             "SELECT item_id FROM items WHERE status='pending' OR (status='indexed' AND ingested_ctag IS DISTINCT FROM ctag) "
-            "ORDER BY (ext IN ('pdf','png','jpg')), size")]
+            # documents before pictures: text formats, then PDFs, then images (OCR, ~10 s each); inside each,
+            # folders other than marketing (05 Thị trường) and fonts/other (07) first, small files first
+            "ORDER BY CASE WHEN ext IN ('docx','xlsx','xlsm','pptx','txt','md','csv','html','htm','eml') THEN 0 "
+            "WHEN ext = 'pdf' THEN 1 WHEN ext IN ('png','jpg','jpeg','jfif','webp') THEN 2 ELSE 3 END, "
+            "(path LIKE '05.%%' OR path LIKE '07.%%'), size")]
 
 
-def ingest_pending(tenant: FakeTenant, workers: int = 3, progress=None) -> list[dict]:
-    ids = pending_items()
+def _text_pdfs_first(tenant: FakeTenant, ids: list[str]) -> list[str]:
+    """Inside the PDF part of the order: PDFs whose pages all have selectable text first (seconds each),
+    then the ones with the fewest pages to OCR (a dense scan is minutes a page set)."""
+    from dr.ingest.parsers import pages_to_ocr
+    pos = [k for k, x in enumerate(ids) if tenant.items.get(x, {}).get("name", "").lower().endswith(".pdf")]
+    scans = {ids[k]: pages_to_ocr(tenant.file_path(ids[k])) for k in pos}
+    out = list(ids)
+    for k, x in zip(pos, sorted((ids[k] for k in pos), key=lambda x: scans[x])):   # stable: old order on ties
+        out[k] = x
+    return out
+
+
+def ingest_pending(tenant: FakeTenant, workers: int = 3, progress=None, shard: tuple[int, int] = (0, 1)) -> list[dict]:
+    """shard=(i, n): only items whose id hashes to i of n, so n processes can share a bulk load
+    (OCR clean-up runs on the CPU one page at a time per process; separate processes run in parallel)."""
+    i, n = shard
+    ids = _text_pdfs_first(tenant, [x for x in pending_items() if n == 1 or zlib.crc32(x.encode()) % n == i])
     results = []
     with ThreadPoolExecutor(workers) as ex:
         for r in ex.map(lambda i: _safe(tenant, i), ids):

@@ -447,9 +447,10 @@ const mySuggestions = () => {
 const MODE_LABEL = { fact: "Trả lời nhanh", summary: "Tổng hợp", compare: "So sánh", list: "Liệt kê", full: "Nguyên văn" };
 // live status line while answering: server step name -> what the user reads
 const STAGE_TEXT = { search: "Đang tìm trong tài liệu bạn được phép xem", live: "Đang hỏi lại SharePoint bằng tài khoản của bạn",
-  llm: "Đang đọc tài liệu và soạn câu trả lời", verify: "Đang kiểm chứng trích dẫn và con số", queue: "Đang chờ lượt xử lý" };
+  llm: "Đang đọc tài liệu và soạn câu trả lời", context: "Đang hiểu câu hỏi theo ngữ cảnh cuộc trò chuyện", verify: "Đang kiểm chứng trích dẫn và con số", queue: "Đang chờ lượt xử lý" };
 const STEP_TEXT = [["Cổng 4", "Đã xác nhận danh tính và quyền dùng AI"], ["Cổng 1+3", "Đã lọc tài liệu theo quyền của bạn"],
-  ["Lớp đầu vào", "Đã kiểm tra an toàn câu hỏi"], ["Phân loại", "Đã xác định kiểu câu trả lời"], ["Tìm kiếm", "Đã tìm tài liệu liên quan"],
+  ["Lớp đầu vào", "Đã kiểm tra an toàn câu hỏi"], ["Câu hỏi nối tiếp", "Đã hiểu câu hỏi theo ngữ cảnh"], ["Tổng hợp cuộc trò chuyện", "Đã gom các nội dung đã trao đổi"],
+  ["Phân loại", "Đã xác định kiểu câu trả lời"], ["Tìm kiếm", "Đã tìm tài liệu liên quan"],
   ["Đọc toàn bộ", "Đã mở tài liệu được nêu tên"], ["Rerank", "Đã xếp hạng đoạn liên quan nhất"],
   ["Cổng 2 – kiểm tra trực tiếp", "SharePoint đã xác nhận quyền mở từng file"], ["Chọn câu", "Đã chọn câu liên quan"],
   ["LLM", "Đã soạn câu trả lời"], ["Kiểm chứng", "Đã đối chiếu trích dẫn nguyên văn"], ["Kiểm tra đúng trọng tâm", "Đã kiểm tra đúng trọng tâm"],
@@ -549,7 +550,9 @@ function renderAnswer(r, i) {
   const m = typeof i === "number" ? CHAT[i] : null;
   const animate = !!(m && m.fresh);
   const chips = [r.approved ? `<span class="chip ok">${icon("check")} Ban IPO đã duyệt${r.edited ? " · có hiệu đính" : ""}</span>` : "",
-    r.withdrawn ? `<span class="chip warn" title="Quyền của bạn đã thay đổi sau khi duyệt">${r.withdrawn} ý đã rút lại</span>` : ""].join("");
+    r.withdrawn ? `<span class="chip warn" title="Quyền của bạn đã thay đổi sau khi duyệt">${r.withdrawn} ý đã rút lại</span>` : "",
+    r.recap ? `<span class="chip">${icon("check")} Tổng hợp từ cuộc trò chuyện</span>` : "",
+    r.standalone_question && !r.recap ? `<span class="chip" title="Câu hỏi nối tiếp được hiểu theo ngữ cảnh">Hiểu là: ${esc(r.standalone_question)}</span>` : ""].join("");
   const sources = `<div class="sources"><span class="src-label">Nguồn</span>${r.citations.map((c) =>
     `<button class="src" data-n="${c.n}" title="${esc(c.name)} · ${esc(c.locator)}"><b>${c.n}</b>${ftype((c.name.split(".").pop() || "").toLowerCase())}<span>${esc(c.name)}</span></button>`).join("")}</div>`;
   const fb = r.audit_seq && !r.approved ? `<button class="act ${m && m.fb === "up" ? "on" : ""}" data-fb="up" title="Câu trả lời đúng" aria-label="Đúng">${icon("thumbUp")}</button>
@@ -629,7 +632,8 @@ async function ask(q) {
     const e = $(`#ans-${CHAT.indexOf(m)} [data-elapsed]`); if (e && !m.r) e.textContent = secs(Date.now() - m.t0);
   }, 100);
   try {
-    m.r = await postStream("/api/chat/stream", { question: q, scope_site: $("#scope-site")?.value || null },
+    m.r = await postStream("/api/chat/stream", { question: q, scope_site: $("#scope-site")?.value || null,
+                                                 conversation_id: CUR },
                            (ev) => onProgress(m, ev));
     m.r.elapsed_ms = Date.now() - m.t0;
     m.fresh = true;
