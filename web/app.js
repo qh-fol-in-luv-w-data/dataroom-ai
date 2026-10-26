@@ -760,7 +760,11 @@ async function pageSearch(page) {
         <button class="btn sm" data-askabout="${esc(x.name)}">${icon("chat")} Hỏi về tài liệu này</button></div></div>`).join("");
     $$("[data-askabout]").forEach((b) => b.onclick = () => { location.hash = "#/chat"; setTimeout(() => { const q = $("#q"); if (q) { q.value = `Tài liệu ${b.dataset.askabout} nói gì về `; q.focus(); } }, 50); });
     $$("[data-summary]").forEach((b) => b.onclick = () => {    // a new conversation holding the summary of this file
-      newConversation(); setTimeout(() => ask(`Tóm tắt tài liệu: ${b.dataset.name}`, { item_id: b.dataset.summary }), 50);
+      // the summary is in the interface language (<html lang>, Vietnamese until the UI is bilingual);
+      // the browser language is not used: many Vietnamese users browse with an English browser
+      const lang = (document.documentElement.lang || "vi").toLowerCase().startsWith("en") ? "en" : "vi";
+      const label = lang === "en" ? `Summary of: ${b.dataset.name}` : `Tóm tắt tài liệu: ${b.dataset.name}`;
+      newConversation(); setTimeout(() => ask(label, { item_id: b.dataset.summary, lang }), 50);
     });
   };
   $("#sform").onsubmit = async (e) => {

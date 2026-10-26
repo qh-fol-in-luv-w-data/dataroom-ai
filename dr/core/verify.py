@@ -139,8 +139,12 @@ def check(raw_claims: list[dict], labels: dict[str, int], passages: dict[int, di
             dropped.append((rc, f"câu trích không thuộc tài liệu về {', '.join(named)}"))
             continue
         asked = norm(question).split()        # the subject the user named (SH09) may be left out of the quote
+        # a scanned table names its units and columns (MW, COD) once, in its header row: a claim read
+        # from one row may use them although the row itself does not
+        header = norm(" ".join(passages[g.chunk_id]["text"].split("\n", 1)[0] for g in good
+                               if passages[g.chunk_id].get("kind") == "table")).split()
         wrong = [t for t in _CODES.findall(text) if t not in _CODE_STOP and norm(t) in given_words
-                 and norm(t) not in quoted.split() and norm(t) not in asked]
+                 and norm(t) not in quoted.split() and norm(t) not in asked and norm(t) not in header]
         if wrong:
             dropped.append((rc, f"tên trong câu trả lời không có trong câu trích ({', '.join(wrong)})"))
             continue

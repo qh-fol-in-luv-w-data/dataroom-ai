@@ -250,13 +250,18 @@ class ChatIn(BaseModel):
     scope_site: str | None = None
     conversation_id: str | None = Field(None, max_length=64)   # turns are kept server-side (dr/core/conversation.py)
     item_id: str | None = Field(None, max_length=64)           # a document picked for a summary (DR_DOC_SUMMARY)
+    lang: str | None = Field(None, pattern="^(vi|en)$")         # language of that summary (the user's)
 
 
 def _ask(claims: dict, body: ChatIn, on_step=None) -> dict:
-    # a picked document is summarised on its own: no follow-up rewrite or recap from the conversation
-    turns = [] if body.item_id else conversation.history(claims["oid"], body.conversation_id)
-    r = answer_mod.ask(S.tenant, S.index, claims["oid"], claims["roles"], body.question, S.deps,
-                       body.scope_site, on_step=on_step, history=turns, item_id=body.item_id)
+    if body.item_id:
+        # a picked document is summarised on its own, with the fixed instruction: the client's text is only shown
+        r = answer_mod.summarize_document(S.tenant, S.index, claims["oid"], claims["roles"], body.item_id, S.deps,
+                                          lang=body.lang or "vi", on_step=on_step)
+    else:
+        turns = conversation.history(claims["oid"], body.conversation_id)
+        r = answer_mod.ask(S.tenant, S.index, claims["oid"], claims["roles"], body.question, S.deps,
+                           body.scope_site, on_step=on_step, history=turns)
     conversation.remember(claims["oid"], body.conversation_id, body.question, r)
     return r
 

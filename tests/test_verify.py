@@ -75,3 +75,19 @@ def test_numbers_from_question_are_context():
 def test_fuzzy_only_for_ocr():
     assert quote_found("Tỷ giá trần bảo hiểm là 25.850 VND/USD theo thoả thuận", P[11]["text"], fuzzy=True)
     assert not quote_found("Doanh thu năm 2025 dat 1.250,5 tỷ đồng", P[10]["text"], fuzzy=False)
+
+
+def test_table_row_claim_may_use_header_units_but_not_another_rows_name():
+    """A scanned table names its units/columns (MW, COD) in the header row only."""
+    table = {20: {"text": "Nhà máy | Tỉnh | Công suất (MW) | COD\nĐMT Ninh Phước 1 | Ninh Thuận | 150 | 2019\n"
+                          "Điện gió Thuận Nam GJDC | Ninh Thuận | 88 | 2021", "ocr": True, "kind": "table"}}
+    row = "ĐMT Ninh Phước 1 | Ninh Thuận | 150 | 2019"
+    ok = [{"text": "ĐMT Ninh Phước 1 có công suất 150 MW, COD năm 2019.", "citations": [{"doc": "D1", "quote": row}]}]
+    kept, dropped = check(ok, {"D1": 20}, table)
+    assert len(kept) == 1 and not dropped
+    other = [{"text": "GJDC có công suất 150 MW.", "citations": [{"doc": "D1", "quote": row}]}]   # another row's name
+    kept, dropped = check(other, {"D1": 20}, table)
+    assert not kept and "GJDC" in dropped[0][1]
+    plain = {21: {**table[20], "kind": "text"}}                       # not a table: header rule does not apply
+    kept, dropped = check(ok, {"D1": 21}, plain)
+    assert not kept

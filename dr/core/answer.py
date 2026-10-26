@@ -144,6 +144,73 @@ def item_chunks(oid: str, item_id: str, limit: int = 400) -> list[int]:
     return [r[0] for r in rows]
 
 
+# Summary of a picked document (BRD mục 3 #5). The instruction is fixed here, never taken from the client and
+# never holding the file name, so no user- or uploader-written text reaches the model outside the
+# <untrusted_document> blocks; the input guard (meant for typed questions) is therefore not run on it.
+DOC_SUMMARY_Q = {
+    "vi": ("Tóm tắt đầy đủ tài liệu này theo đúng thứ tự của tài liệu, nêu mọi nội dung chính (các bên liên quan, "
+           "mục đích, số liệu, ngày tháng, điều khoản và nghĩa vụ, quyết định, kết luận), không bỏ sót phần nào."),
+    "en": ("Summarise this document in full, in the document's order, stating every main point (parties, purpose, "
+           "figures, dates, terms and obligations, decisions, conclusions), leaving no part out."),
+}
+DOC_PLAN = intent.Plan("summary", 60, 60, 48, 12, False, False)   # one part: every chunk of it, up to 12 points
+DOC_PART_CHARS = 4000    # characters of one part: small enough that 12 points cover it
+SUMMARY_PARTS = 6        # a longer document is summarised in at most this many consecutive parts (one model call each)
+
+
+def summary_parts(sizes: list[tuple[int, int, int]], budget: int, max_sentences: int) -> list[list[int]]:
+    """sizes: (chunk_id, characters, sentences) in reading order -> consecutive runs of chunks, each small
+    enough to be read whole by one model call, at most SUMMARY_PARTS runs of about equal length."""
+    if not sizes:
+        return []
+    chars, sents = sum(s[1] for s in sizes), sum(s[2] for s in sizes)
+    k = min(SUMMARY_PARTS, max(1, -(-chars // max(1, budget)), -(-sents // max(1, max_sentences))))
+    runs, cur, used = [], [], 0
+    for cid, n, _ in sizes:
+        if cur and used + n > chars * (len(runs) + 1) / k and len(runs) < k - 1:
+            runs.append(cur)
+            cur = []
+        cur.append(cid)
+        used += n
+    return runs + [cur]
+
+
+def summarize_document(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], item_id: str,
+                       deps: Deps, lang: str = "vi", on_step: Callable | None = None) -> dict:
+    """The whole picked document, nothing left out: each consecutive part is summarised, verified and
+    live-checked like any answer, and the points are joined in reading order with their sources."""
+    from dr.models.llm import split_sentences
+    question = DOC_SUMMARY_Q.get(lang, DOC_SUMMARY_Q["vi"])
+    ids = item_chunks(oid, item_id)
+    texts = gates.fetch_passages(oid, ids)
+    runs = summary_parts([(c, len(texts[c]["text"]), len(split_sentences(texts[c]["text"]))) for c in ids if c in texts],
+                         DOC_PART_CHARS, DOC_PLAN.sentences) or [None]
+    results = []
+    for k, run in enumerate(runs, 1):
+        if len(runs) > 1 and on_step:
+            on_step({"step": f"Tóm tắt phần {k}/{len(runs)}", "ok": True, "ms": 0})
+        r = ask(tenant, index, oid, roles, question, deps, on_step=on_step, item_id=item_id, part=run)
+        if r["refused"] and r.get("message") != lang_mod.tr(NEUTRAL_REFUSAL, r.get("lang", lang)):
+            return r                     # blocked, unavailable, retry…: no partial summary is released
+        results.append(r)
+    good = [r for r in results if not r["refused"] and r["claims"]]
+    if len(results) == 1 or not good:
+        return good[0] if good else results[0]
+    claims, cites, number = [], [], {}
+    for r in good:                       # citations renumbered across parts, the same sentence cited once
+        remap = {}
+        for c in r["citations"]:
+            key = (c["item_id"], c.get("chunk_id"), c.get("quote"))
+            if key not in number:
+                number[key] = len(cites) + 1
+                cites.append({**c, "n": number[key]})
+            remap[c["n"]] = number[key]
+        claims += [{**cl, "refs": [remap[n] for n in cl["refs"] if n in remap]} for cl in r["claims"]]
+    trace = [s for k, r in enumerate(results, 1)
+             for s in [{"step": f"Tóm tắt phần {k}/{len(runs)}", "ok": True, "ms": 0}] + r["trace"]]
+    return {**good[-1], "claims": claims, "citations": cites, "trace": trace, "parts": len(runs)}
+
+
 def spread(seq: list, n: int) -> list:
     """n items evenly spaced over seq, first and last included, in order: a long document is read at
     its beginning, middle and end instead of its first pages only."""
@@ -270,8 +337,11 @@ def crop_for(page_ref: str | None, quote: str) -> dict | None:
 
 def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], question: str,
         deps: Deps, scope_site: str | None = None, on_step: Callable | None = None,
-        history: list[conversation.Turn] | None = None, item_id: str | None = None) -> dict:
+        history: list[conversation.Turn] | None = None, item_id: str | None = None,
+        part: list[int] | None = None) -> dict:
     trace = Trace(on_step=on_step)
+    if item_id and question not in DOC_SUMMARY_Q.values():
+        question = DOC_SUMMARY_Q["vi"]            # a picked document only ever gets the fixed instruction
     question = guard.strip_controls(question).strip()[:1000]
     lang = lang_mod.detect(question)
 
@@ -299,7 +369,10 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
         return refuse(NEUTRAL_REFUSAL)
 
     # ---- layer 2: input security (normalise, injection rules, classifier, personal data)
-    if settings.input_guard:
+    if item_id:
+        qvec = None
+        trace.add("Lớp đầu vào – câu lệnh tóm tắt cố định của hệ thống (không có chữ người dùng)", True)
+    elif settings.input_guard:
         clean_q = guard.clean(question)
         qvec = deps.embed_query(clean_q) if deps.embed_query else None
         v = guard.inspect(question, qvec, deps.embed_many)
@@ -390,7 +463,7 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
         plan = intent.PLANS["summary"]
         whole_doc = document_chunks(oid, codes, files_named)
     if item_id:                                  # a document the user picked to summarise (BRD mục 3 #5)
-        plan, whole_doc = intent.PLANS["summary"], item_chunks(oid, item_id)
+        plan, whole_doc = DOC_PLAN, part or item_chunks(oid, item_id)
         if not whole_doc:
             return nothing_found()
     if recap_chunks:
