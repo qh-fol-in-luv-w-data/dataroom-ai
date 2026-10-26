@@ -241,6 +241,7 @@ def me(claims: dict = Depends(current)):
             "type": u.get("type", "guest"), "roles": claims["roles"], "groups": _groups_of(oid),
             "sites": [{"id": s["id"], "name": s["name"]} for s in S.tenant.sites.values()
                       if set(s.get("groups", [])) & set(_groups_of(oid))],
+            "features": {"doc_summary": settings.doc_summary},
             "exp": claims["exp"]}
 
 
@@ -248,19 +249,23 @@ class ChatIn(BaseModel):
     question: str
     scope_site: str | None = None
     conversation_id: str | None = Field(None, max_length=64)   # turns are kept server-side (dr/core/conversation.py)
+    item_id: str | None = Field(None, max_length=64)           # a document picked for a summary (DR_DOC_SUMMARY)
 
 
 def _ask(claims: dict, body: ChatIn, on_step=None) -> dict:
-    turns = conversation.history(claims["oid"], body.conversation_id)
+    # a picked document is summarised on its own: no follow-up rewrite or recap from the conversation
+    turns = [] if body.item_id else conversation.history(claims["oid"], body.conversation_id)
     r = answer_mod.ask(S.tenant, S.index, claims["oid"], claims["roles"], body.question, S.deps,
-                       body.scope_site, on_step=on_step, history=turns)
+                       body.scope_site, on_step=on_step, history=turns, item_id=body.item_id)
     conversation.remember(claims["oid"], body.conversation_id, body.question, r)
     return r
 
 
-def _chat_precheck(claims: dict) -> None:
+def _chat_precheck(claims: dict, body: ChatIn | None = None) -> None:
     if claims.get("admin"):
         raise HTTPException(400, "Hãy chọn một danh tính người dùng để hỏi")
+    if body is not None and body.item_id and not settings.doc_summary:
+        raise HTTPException(403, "Chức năng tóm tắt một tài liệu chưa được bật")
     if S.deps is None:
         raise HTTPException(503, "Model đang khởi động, thử lại sau ít giây")
     wait = ratelimit.limiter.check(claims["oid"])
@@ -274,7 +279,7 @@ async def chat_stream(body: ChatIn, claims: dict = Depends(current)):
     """Same answer as /api/chat, with live progress: one JSON line per finished step, then the
     result line. Progress lines carry step names and timings only; the answer is released in
     one block after verification and the final permission re-check, as in /api/chat."""
-    _chat_precheck(claims)
+    _chat_precheck(claims, body)
     loop = asyncio.get_running_loop()
     events: asyncio.Queue = asyncio.Queue()
     emit = lambda ev: loop.call_soon_threadsafe(events.put_nowait, ev)
@@ -307,7 +312,7 @@ async def chat_stream(body: ChatIn, claims: dict = Depends(current)):
 
 @app.post("/api/chat")
 async def chat(body: ChatIn, claims: dict = Depends(current)):
-    _chat_precheck(claims)
+    _chat_precheck(claims, body)
 
     def run():
         with ratelimit.limiter.slots:     # bounded concurrent LLM work across all users

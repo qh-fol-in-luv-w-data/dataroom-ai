@@ -623,7 +623,7 @@ function wireAnswer(el, i) {
   if (m && m.fresh) setTimeout(() => { m.fresh = false; }, 1200);
 }
 
-async function ask(q) {
+async function ask(q, extra = {}) {      // extra: { item_id } for the summary of a picked document
   if (!q || CHAT.some((m) => !m.r)) return;
   if (!CUR) {                                   // first question opens a conversation
     const c = { id: "c" + Date.now(), title: q.length > 60 ? q.slice(0, 57) + "…" : q, items: CHAT };
@@ -638,7 +638,7 @@ async function ask(q) {
   }, 100);
   try {
     m.r = await postStream("/api/chat/stream", { question: q, scope_site: $("#scope-site")?.value || null,
-                                                 conversation_id: CUR },
+                                                 conversation_id: CUR, ...extra },
                            (ev) => onProgress(m, ev));
     m.r.elapsed_ms = Date.now() - m.t0;
     m.fresh = true;
@@ -756,8 +756,12 @@ async function pageSearch(page) {
       <div class="muted small">${esc([x.path, x.label, x.locator].filter(Boolean).join(" · "))}</div>
       ${x.snippet ? `<p class="snip">${highlight(x.snippet, r.terms)}</p>` : ""}
       <div class="cite-foot"><button class="linkbtn" data-open="${esc(x.item_id)}">${icon("file")} Mở file ${icon("ext")}</button>
-        <span style="flex:1"></span><button class="btn sm" data-askabout="${esc(x.name)}">${icon("chat")} Hỏi về tài liệu này</button></div></div>`).join("");
+        <span style="flex:1"></span>${ME.features?.doc_summary ? `<button class="btn sm" data-summary="${esc(x.item_id)}" data-name="${esc(x.name)}">${icon("spark")} Tóm tắt</button>` : ""}
+        <button class="btn sm" data-askabout="${esc(x.name)}">${icon("chat")} Hỏi về tài liệu này</button></div></div>`).join("");
     $$("[data-askabout]").forEach((b) => b.onclick = () => { location.hash = "#/chat"; setTimeout(() => { const q = $("#q"); if (q) { q.value = `Tài liệu ${b.dataset.askabout} nói gì về `; q.focus(); } }, 50); });
+    $$("[data-summary]").forEach((b) => b.onclick = () => {    // a new conversation holding the summary of this file
+      newConversation(); setTimeout(() => ask(`Tóm tắt tài liệu: ${b.dataset.name}`, { item_id: b.dataset.summary }), 50);
+    });
   };
   $("#sform").onsubmit = async (e) => {
     e.preventDefault();
