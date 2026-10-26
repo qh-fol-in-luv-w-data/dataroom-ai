@@ -317,14 +317,16 @@ async def chat(body: ChatIn, claims: dict = Depends(current)):
 
 # ------------------------------------------------------------------ search, review, feedback (BRD v1.4)
 @app.get("/api/search")
-async def search(q: str = Query(..., max_length=300), site: str | None = None, claims: dict = Depends(current)):
+async def search(q: str = Query("", max_length=300), site: str | None = Query(None, max_length=64),
+                 kind: str | None = Query(None, max_length=16), claims: dict = Depends(current)):
     if claims.get("admin"):
         raise HTTPException(400, "Hãy chọn một danh tính người dùng để tìm")
     wait = ratelimit.limiter.check(claims["oid"])
     if wait:
         raise HTTPException(429, RATE_MESSAGE.format(seconds=int(wait) + 1), headers={"Retry-After": str(int(wait) + 1)})
     from dr.core.search import search_files
-    return await run_in_threadpool(search_files, S.tenant, S.index, claims["oid"], claims["roles"], q, S.deps, site)
+    return await run_in_threadpool(search_files, S.tenant, S.index, claims["oid"], claims["roles"], q, S.deps, site,
+                                   kind)
 
 
 @app.get("/api/my/drafts")
