@@ -176,7 +176,9 @@ const post = (path, body) => api(path, { method: "POST", body });
 // login again; demo: a single-use ticket to the view-only viewer). No public or shareable link is ever shown.
 async function openFile(id) {
   const w = window.open("", "_blank");
-  if (w) { w.opener = null; w.document.title = "Đang kiểm tra quyền…"; w.document.body.textContent = "Đang kiểm tra quyền truy cập…"; }
+  if (w) { w.opener = null; w.document.title = "Đang kiểm tra quyền…";
+    w.document.body.setAttribute("style", "font:15px system-ui,sans-serif;display:grid;place-items:center;height:100vh;margin:0;color:#667085");
+    w.document.body.textContent = "Đang kiểm tra quyền truy cập…"; }
   try {
     const r = await post(`/api/files/${encodeURIComponent(id)}/link`, {});
     if (w) w.location.replace(r.url); else location.assign(r.url);
@@ -834,43 +836,38 @@ function highlight(text, terms) {
   let out = esc(text);
   for (const t of terms || []) {
     if (t.length < 3) continue;
-    out = out.replace(new RegExp(`(${t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "gi"), "<mark>$1</mark>");
+    out = out.replace(new RegExp(`(${esc(t).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "gi"), "<mark>$1</mark>");
   }
   return out;
 }
+const fmtSize = (b) => !b ? "" : b < 1024 ? b + " B" : b < 1048576 ? Math.round(b / 1024) + " KB" : (b / 1048576).toFixed(1) + " MB";
+// A summary of one picked document, in a new conversation (same contract as before: ask(label, { item_id, lang })).
+// The summary is in the interface language (<html lang>, Vietnamese until the UI is bilingual);
+// the browser language is not used: many Vietnamese users browse with an English browser.
+function summariseFile(itemId, name) {
+  const lang = (document.documentElement.lang || "vi").toLowerCase().startsWith("en") ? "en" : "vi";
+  const label = lang === "en" ? `Summary of: ${name}` : `Tóm tắt tài liệu: ${name}`;
+  newConversation(); setTimeout(() => ask(label, { item_id: itemId, lang }), 50);
+}
 async function pageSearch(page) {
-  const opt = (v, label, cur) => `<option value="${esc(v)}" ${v === cur ? "selected" : ""}>${esc(label)}</option>`;
-  page.innerHTML = `<form class="toolbar" id="sform"><div class="search" style="flex:1;max-width:none">${icon("search")}
-      <input class="input" id="sq" placeholder="Từ khóa, mô tả nội dung hoặc một phần tên file — ví dụ: biên bản họp HĐQT, thoa-thuan…" value="${esc(SEARCH_Q)}"></div>
-      <select class="input" id="ssite" style="width:auto" aria-label="Site">${opt("", "Mọi site", SEARCH_SITE)}${(ME.sites || []).map((s) => opt(s.id, s.name, SEARCH_SITE)).join("")}</select>
-      <select class="input" id="skind" style="width:auto" aria-label="Loại file">${opt("", "Mọi loại file", SEARCH_KIND)}${Object.entries(KIND_LABEL).map(([k, v]) => opt(k, v, SEARCH_KIND)).join("")}</select>
-      <button class="btn primary" type="submit">Tìm</button></form><div id="sres"></div>`;
-  const draw = () => {
-    const r = SEARCH_RES;
-    if (!r) { $("#sres").innerHTML = '<div class="card empty">Nhập từ khóa, mô tả nội dung hoặc một phần tên file — không cần nhớ chính xác tên. Hoặc chọn site / loại file để xem danh sách.</div>'; return; }
-    if (r.refused) { $("#sres").innerHTML = `<div class="card empty">${esc(r.message)}</div>`; return; }
-    if (!r.results.length) { $("#sres").innerHTML = '<div class="card empty">Không tìm thấy tài liệu phù hợp trong phạm vi của bạn.</div>'; return; }
-    $("#sres").innerHTML = `<p class="muted small">${r.results.length} tài liệu trong phạm vi của bạn</p>` + r.results.map((x) => `<div class="card sr">
-      <div class="cite-top">${ftype(x.ext)}<b class="cite-name">${esc(x.name)}</b><span class="chip">${esc(x.site_name || SITE_LABEL[x.site_id] || x.site_id)}</span>
-        ${(x.match || []).includes("name") ? '<span class="chip brand">khớp tên</span>' : ""}${x.ocr ? '<span class="chip info">bản scan</span>' : ""}</div>
-      <div class="muted small">${esc([x.path, x.label, x.locator].filter(Boolean).join(" · "))}</div>
-      ${x.snippet ? `<p class="snip">${highlight(x.snippet, r.terms)}</p>` : ""}
-      <div class="cite-foot"><button class="linkbtn" data-open="${esc(x.item_id)}">${icon("file")} Xem file ${icon("ext")}</button>
-        <span style="flex:1"></span>${ME.features?.doc_summary ? `<button class="btn sm" data-summary="${esc(x.item_id)}" data-name="${esc(x.name)}">${icon("spark")} Tóm tắt</button>` : ""}
-        <button class="btn sm" data-askabout="${esc(x.name)}">${icon("chat")} Hỏi về tài liệu này</button></div></div>`).join("");
-    $$("[data-askabout]").forEach((b) => b.onclick = () => { location.hash = "#/chat"; setTimeout(() => { const q = $("#q"); if (q) { q.value = `Tài liệu ${b.dataset.askabout} nói gì về `; q.focus(); } }, 50); });
-    $$("[data-summary]").forEach((b) => b.onclick = () => {    // a new conversation holding the summary of this file
-      // the summary is in the interface language (<html lang>, Vietnamese until the UI is bilingual);
-      // the browser language is not used: many Vietnamese users browse with an English browser
-      const lang = (document.documentElement.lang || "vi").toLowerCase().startsWith("en") ? "en" : "vi";
-      const label = lang === "en" ? `Summary of: ${b.dataset.name}` : `Tóm tắt tài liệu: ${b.dataset.name}`;
-      newConversation(); setTimeout(() => ask(label, { item_id: b.dataset.summary, lang }), 50);
-    });
-  };
-  $("#sform").onsubmit = async (e) => {
-    e.preventDefault();
-    SEARCH_Q = $("#sq").value.trim(); SEARCH_SITE = $("#ssite").value; SEARCH_KIND = $("#skind").value;
-    if (!SEARCH_Q && !SEARCH_SITE && !SEARCH_KIND) return;
+  // arriving from the viewer's "Tóm tắt tài liệu" button: #/search?summary=<item_id>&name=<file name>
+  const hq = new URLSearchParams(location.hash.split("?")[1] || "");
+  if (hq.get("summary")) {
+    const id = hq.get("summary"), nm = hq.get("name") || "";
+    history.replaceState(null, "", "#/search");
+    if (ME.features?.doc_summary) { summariseFile(id, nm); return; }
+    toast("Tài khoản của bạn chưa được dùng tính năng tóm tắt tài liệu", "bad");
+  }
+  const chip = (attr, v, label, cur) => `<button type="button" class="fchip ${v === cur ? "on" : ""}" data-${attr}="${esc(v)}" aria-pressed="${v === cur}">${esc(label)}</button>`;
+  page.innerHTML = `<form class="sform" id="sform"><div class="toolbar" style="margin-bottom:8px"><div class="search" style="flex:1;max-width:none">${icon("search")}
+      <input class="input" id="sq" autocomplete="off" aria-label="Tìm tài liệu" placeholder="Từ khóa, mô tả nội dung hoặc một phần tên file — ví dụ: biên bản họp HĐQT, thoa-thuan…" value="${esc(SEARCH_Q)}"></div>
+      <button class="btn primary" type="submit">Tìm</button></div>
+    <div class="fchips" role="group" aria-label="Site"><span class="fl">Site</span>${chip("fsite", "", "Tất cả", SEARCH_SITE)}${(ME.sites || []).map((s) => chip("fsite", s.id, s.name, SEARCH_SITE)).join("")}</div>
+    <div class="fchips" role="group" aria-label="Loại file"><span class="fl">Loại file</span>${chip("fkind", "", "Tất cả", SEARCH_KIND)}${Object.entries(KIND_LABEL).map(([k, v]) => chip("fkind", k, v, SEARCH_KIND)).join("")}</div>
+  </form><div id="sres" aria-live="polite"></div>`;
+  const run = async () => {
+    SEARCH_Q = $("#sq").value.trim();
+    if (!SEARCH_Q && !SEARCH_SITE && !SEARCH_KIND) { SEARCH_RES = null; draw(); return; }
     const qs = new URLSearchParams({ q: SEARCH_Q });
     if (SEARCH_SITE) qs.set("site", SEARCH_SITE);
     if (SEARCH_KIND) qs.set("kind", SEARCH_KIND);
@@ -878,12 +875,46 @@ async function pageSearch(page) {
     try { SEARCH_RES = await api("/api/search?" + qs); } catch (ex) { SEARCH_RES = { refused: true, message: ex.message }; }
     draw();
   };
+  const draw = () => {
+    const r = SEARCH_RES;
+    $$(".fchip[data-fsite]").forEach((b) => { const on = b.dataset.fsite === SEARCH_SITE; b.classList.toggle("on", on); b.setAttribute("aria-pressed", on); });
+    $$(".fchip[data-fkind]").forEach((b) => { const on = b.dataset.fkind === SEARCH_KIND; b.classList.toggle("on", on); b.setAttribute("aria-pressed", on); });
+    const empty = (ic, t, sub) => `<div class="card empty sr-empty">${icon(ic)}<b>${esc(t)}</b>${sub ? `<span>${esc(sub)}</span>` : ""}</div>`;
+    if (!r) { $("#sres").innerHTML = empty("search", "Tìm tài liệu trong phạm vi của bạn", "Nhập từ khóa, mô tả nội dung hoặc một phần tên file — không cần nhớ chính xác tên. Hoặc chọn site / loại file để xem danh sách."); return; }
+    if (r.refused) { $("#sres").innerHTML = empty("lock", r.message || "Không thể tìm kiếm", "Bạn chỉ thấy tài liệu trong phạm vi được cấp quyền."); return; }
+    if (!r.results.length) { $("#sres").innerHTML = empty("folder", "Không tìm thấy tài liệu phù hợp trong phạm vi của bạn", "Thử từ khóa ngắn hơn, bỏ bớt bộ lọc, hoặc mô tả nội dung thay vì tên file. Tài liệu ngoài phạm vi truy cập sẽ không hiển thị."); return; }
+    $("#sres").innerHTML = `<p class="muted small sr-count"><b>${r.results.length}</b> tài liệu trong phạm vi của bạn <span class="kbd-hint">· ↑ ↓ chọn, Enter để xem</span></p><div class="sr-list" role="list">` + r.results.map((x) => {
+      const crumb = String(x.path || "").split(/[\\/]/).filter(Boolean);
+      const meta = [x.label, x.locator, fmtSize(x.size)].filter(Boolean);
+      return `<div class="card sr" role="listitem" tabindex="0" data-row="${esc(x.item_id)}" aria-label="${esc(x.name)}">
+      <div class="cite-top">${ftype(x.ext)}<b class="cite-name">${highlight(x.name, r.terms)}</b><span class="chip">${esc(x.site_name || SITE_LABEL[x.site_id] || x.site_id)}</span>
+        ${(x.match || []).includes("name") ? '<span class="chip brand">khớp tên</span>' : ""}${x.ocr ? '<span class="chip info">bản scan</span>' : ""}</div>
+      <div class="sr-crumb muted small">${icon("folder")}${crumb.length ? crumb.map((c) => `<span>${esc(c)}</span>`).join("") : "<span>(gốc)</span>"}${meta.length ? `<em>${esc(meta.join(" · "))}</em>` : ""}</div>
+      ${x.snippet ? `<p class="snip">${highlight(x.snippet, r.terms)}</p>` : ""}
+      <div class="cite-foot"><button class="btn sm primary" data-open="${esc(x.item_id)}" title="Chỉ xem, không tải về">${icon("eye")} Xem file</button>
+        ${ME.features?.doc_summary ? `<button class="btn sm" data-summary="${esc(x.item_id)}" data-name="${esc(x.name)}">${icon("spark")} Tóm tắt tài liệu</button>` : ""}
+        <button class="btn sm ghost" data-askabout="${esc(x.name)}">${icon("chat")} Hỏi về tài liệu này</button></div></div>`;
+    }).join("") + "</div>";
+    $$("[data-askabout]").forEach((b) => b.onclick = () => { location.hash = "#/chat"; setTimeout(() => { const q = $("#q"); if (q) { q.value = `Tài liệu ${b.dataset.askabout} nói gì về `; q.focus(); } }, 50); });
+    $$("[data-summary]").forEach((b) => b.onclick = () => summariseFile(b.dataset.summary, b.dataset.name));
+  };
+  $("#sform").onsubmit = (e) => { e.preventDefault(); run(); };
+  $$(".fchip[data-fsite]").forEach((b) => b.onclick = () => { SEARCH_SITE = b.dataset.fsite; run(); });
+  $$(".fchip[data-fkind]").forEach((b) => b.onclick = () => { SEARCH_KIND = b.dataset.fkind; run(); });
+  // keyboard: ↓ from the box into the list, ↑/↓ between results, Enter opens (view only), Esc back to the box
+  page.onkeydown = (e) => {
+    const rows = $$(".sr[data-row]", page), i = rows.indexOf(document.activeElement);
+    if (e.key === "ArrowDown" && (i >= 0 || document.activeElement === $("#sq")) && rows.length) { e.preventDefault(); rows[Math.min(rows.length - 1, i + 1)].focus(); }
+    else if (e.key === "ArrowUp" && i >= 0) { e.preventDefault(); if (i === 0) $("#sq").focus(); else rows[i - 1].focus(); }
+    else if (e.key === "Enter" && i >= 0 && e.target === rows[i]) { e.preventDefault(); openFile(rows[i].dataset.row); }
+    else if (e.key === "Escape" && i >= 0) $("#sq").focus();
+  };
   draw();
   $("#sq").focus();
 }
 
 // ------------------------------------------------------------------ scope
-let SCOPE_FILTER = null, SCOPE_Q = "";
+let SCOPE_FILTER = null, SCOPE_Q = "", SCOPE_OPEN = {};   // SCOPE_OPEN: site/folder key -> open? (kept across redraws)
 function scopeStats(sc) {
   const c = sc.counts;
   return [["all", "Mở được trên SharePoint", sc.sharepoint_total, ""], ["ai_ok", "AI truy xuất được", c.ai_ok || 0, "ok"],
@@ -892,22 +923,31 @@ function scopeStats(sc) {
 }
 function renderTree(sc, filter, q) {
   q = (q || "").toLowerCase();
+  const searching = !!(filter || q);                         // while filtering, show what matched: everything open
+  const isOpen = (key, dflt) => searching ? true : (key in SCOPE_OPEN ? SCOPE_OPEN[key] : dflt);
   return sc.sites.map((s) => {
     const all = s.folders.flatMap((f) => f.files);
     const ai = all.filter((x) => x.status === "ai_ok").length;
-    const folders = s.folders.map((f) => {
+    let shown = 0;
+    const folders = s.folders.map((f, fi) => {
       const files = f.files.filter((x) => (!filter || x.status === filter) && (!q || x.name.toLowerCase().includes(q)));
       if (!files.length) return "";
-      return `<div class="folder"><div class="folder-h">${icon("folder")} ${esc(f.path || "(gốc)")}</div>${files.map((x) => {
+      shown += files.length;
+      const fai = f.files.filter((x) => x.status === "ai_ok").length;
+      const key = s.site + "/" + (f.path || "");
+      const depth = Math.min(4, Math.max(0, (f.path || "").split(/[\\/]/).filter(Boolean).length - 1));
+      return `<details class="folder" data-key="${esc(key)}" ${isOpen(key, fi < 3) ? "open" : ""} style="--d:${depth}"><summary class="folder-h">${icon("chevron", "chev")}${icon("folder")} <span class="fp">${esc(f.path || "(gốc)")}</span>
+        <span class="cnt" title="File AI dùng được / tổng số file trong thư mục">${fai}/${f.files.length}</span></summary>${files.map((x) => {
         const [lab, cls] = STATUS[x.status] || [x.status, ""];
         return `<div class="file">${ftype(x.ext)}<span class="name" title="${esc(x.name)}">${esc(x.name)}</span><span class="chip ${cls}">${lab}</span><span class="det">${esc(x.detail || "")}</span></div>`;
-      }).join("")}</div>`;
+      }).join("")}</details>`;
     }).join("");
     if (!folders) return "";
-    return `<details class="card site-block" open><summary>${icon("globe")} ${esc(s.name)} <span class="chip">${s.site}</span>
-      <span class="muted small" style="font-weight:500">${ai}/${all.length} file AI dùng được</span>
+    const key = "site:" + s.site;
+    return `<details class="card site-block" data-key="${esc(key)}" ${isOpen(key, true) ? "open" : ""}><summary>${icon("chevron", "chev")}${icon("globe")} ${esc(s.name)} <span class="chip">${s.site}</span>
+      <span class="muted small" style="font-weight:500">${ai}/${all.length} file AI dùng được${searching ? ` · ${shown} khớp` : ""}</span>
       <span class="bar"><span style="width:${all.length ? Math.round(ai / all.length * 100) : 0}%"></span></span></summary>${folders}</details>`;
-  }).join("") || '<div class="card empty">Không có tài liệu phù hợp.</div>';
+  }).join("") || '<div class="card empty">Không có tài liệu phù hợp với bộ lọc hiện tại.</div>';
 }
 
 let SCOPE_USER = null;
@@ -918,20 +958,25 @@ async function pageScope(page) {
       <select class="input" id="scope-user">${DIR.users.map((u) => `<option value="${u.oid}" ${u.oid === SCOPE_USER ? "selected" : ""}>${esc(u.name)} — ${esc(u.org)}</option>`).join("")}</select></label>
       <div class="chips" id="scope-who" style="align-self:flex-end"></div></div>
     <div class="stats" id="stats"></div>
-    <div class="toolbar"><div class="search">${icon("search")}<input class="input" id="sq" placeholder="Tìm theo tên file…" value="${esc(SCOPE_Q)}"></div>
+    <div class="toolbar"><div class="search">${icon("search")}<input class="input" id="sq" placeholder="Tìm theo tên file…" aria-label="Tìm theo tên file" value="${esc(SCOPE_Q)}"></div>
+    <button class="btn sm" id="scope-exp" type="button">Mở hết</button><button class="btn sm" id="scope-col" type="button">Thu gọn hết</button>
     <span class="muted small" id="scope-note"></span></div><div id="tree"><div class="card empty">Đang tải…</div></div>`;
-  $("#scope-user").onchange = (e) => { SCOPE_USER = e.target.value; pageScope(page); };
+  $("#scope-user").onchange = (e) => { SCOPE_USER = e.target.value; SCOPE_OPEN = {}; pageScope(page); };
   const sc = await api("/api/scope_of/" + encodeURIComponent(SCOPE_USER));
   $("#scope-who").innerHTML = sc.groups.map((g) => `<span class="chip brand">${esc(GROUP_LABEL[g] || g)}</span>`).join("")
     + sc.roles.map((r) => `<span class="chip info">${esc(ROLE_LABEL[r] || r)}</span>`).join("");
   const draw = () => {
-    $("#stats").innerHTML = scopeStats(sc).map(([k, l, v, cls]) => `<button class="stat ${cls} ${(SCOPE_FILTER || "all") === k ? "sel" : ""}" data-k="${k}"><div class="v">${v}</div><div class="l">${l}</div></button>`).join("");
+    $("#stats").innerHTML = scopeStats(sc).map(([k, l, v, cls]) => `<button class="stat ${cls} ${(SCOPE_FILTER || "all") === k ? "sel" : ""}" data-k="${k}" aria-pressed="${(SCOPE_FILTER || "all") === k}"><div class="v">${v}</div><div class="l">${l}</div></button>`).join("");
     $$("#stats .stat").forEach((b) => b.onclick = () => { SCOPE_FILTER = b.dataset.k === "all" ? null : b.dataset.k; draw(); });
     $("#tree").innerHTML = renderTree(sc, SCOPE_FILTER, SCOPE_Q);
+    $$("#tree details[data-key]").forEach((d) => d.addEventListener("toggle", () => { SCOPE_OPEN[d.dataset.key] = d.open; }));
     $("#scope-note").innerHTML = sc.violations_ai_without_sharepoint.length
       ? `<span class="chip bad">VI PHẠM: AI thấy ${sc.violations_ai_without_sharepoint.length} file SharePoint không cho mở</span>`
       : `${icon("check")} Không có tài liệu nào AI thấy mà SharePoint không cho mở`;
   };
+  const setAll = (v) => { $$("#tree details[data-key]").forEach((d) => { d.open = v; SCOPE_OPEN[d.dataset.key] = v; }); };
+  $("#scope-exp").onclick = () => setAll(true);
+  $("#scope-col").onclick = () => setAll(false);
   $("#sq").oninput = (e) => { SCOPE_Q = e.target.value; draw(); };
   draw();
 }

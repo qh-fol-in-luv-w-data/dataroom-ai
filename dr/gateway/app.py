@@ -615,7 +615,8 @@ def open_file(item_id: str, ticket: str = Query(...)):
         body = viewer.NOT_SHOWN
     audit.append(oid, "file_view", {"item_id": item_id})
     u = S.tenant.users.get(oid, {})
-    page, headers = viewer.response_parts(it["name"], " – ".join(v for v in (u.get("name"), u.get("email")) if v), body)
+    page, headers = viewer.response_parts(it["name"], " – ".join(v for v in (u.get("name"), u.get("email")) if v), body,
+                                         crumb=it.get("path") or "", item_id=item_id, summary=bool(settings.doc_summary))
     return HTMLResponse(page, headers=headers)
 
 
