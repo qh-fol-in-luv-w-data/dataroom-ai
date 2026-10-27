@@ -535,7 +535,8 @@ const STEP_TEXT = [["Cổng 4", "Đã xác nhận danh tính và quyền dùng A
   ["Đọc toàn bộ", "Đã mở tài liệu được nêu tên"], ["Rerank", "Đã xếp hạng đoạn liên quan nhất"],
   ["Cổng 2 – kiểm tra trực tiếp", "SharePoint đã xác nhận quyền mở từng file"], ["Chọn câu", "Đã chọn câu liên quan"],
   ["LLM", "Đã soạn câu trả lời"], ["Kiểm chứng", "Đã đối chiếu trích dẫn nguyên văn"], ["Kiểm tra đúng trọng tâm", "Đã kiểm tra đúng trọng tâm"],
-  ["NLI", "Đã chấm độ khớp ý"], ["Cổng 2 + 4", "Đã kiểm tra quyền lần cuối"]];
+  ["NLI", "Đã chấm độ khớp ý"], ["Chỉ mục dữ kiện", "Đã tra cứu trực tiếp trong tài liệu"],
+  ["Phát hiện tài liệu ghi số liệu khác", "Đã đối chiếu số liệu với tài liệu khác"], ["Cổng 2 + 4", "Đã kiểm tra quyền lần cuối"]];
 function onProgress(m, ev) {
   if (ev.stage) m.now = STAGE_TEXT[ev.stage] || m.now;
   if (ev.step) {
@@ -568,7 +569,7 @@ function pageChat(page) {
         <h2>${greeting()}, ${esc(ME.name.split(" ").slice(-1)[0])}</h2>
         <p>Hỏi về tài liệu trong Data Room bằng tiếng Việt (có dấu hoặc không dấu) hoặc tiếng Anh. Mọi câu trả lời chỉ dùng tài liệu bạn có quyền xem và luôn kèm trích dẫn.</p>
         ${composerHTML(canAI, true)}
-        ${canAI ? `<div class="suggest">${mySuggestions().map(([tag, s]) => `<button type="button" data-q="${esc(s)}"><small>${tag}</small><span>${esc(s)}</span></button>`).join("")}</div>`
+        ${canAI ? `<div class="suggest-h">Thử hỏi</div><div class="suggest">${mySuggestions().map(([tag, s]) => `<button type="button" data-q="${esc(s)}"><small>${tag}</small><span>${esc(s)}</span></button>`).join("")}</div>`
           : '<div class="notice bad">' + icon("lock") + '<div>Tài khoản của bạn chưa được cấp quyền dùng trợ lý AI. Vui lòng liên hệ Ban IPO.</div></div>'}
       </div></div>`;
     $$(".suggest button", page).forEach((b) => b.onclick = () => ask(b.dataset.q));
@@ -600,23 +601,42 @@ function renderThread() {
 const secs = (ms) => (ms / 1000).toFixed(1).replace(".", ",") + " s";
 function renderThinking(m) {
   const now = Date.now() - (m.t0 || Date.now());
-  return `<details class="thinking" ${m.open ? "open" : ""} ontoggle="CHAT[${CHAT.indexOf(m)}] && (CHAT[${CHAT.indexOf(m)}].open = this.open)">
-      <summary><span class="pulse"></span><span class="shimmer">${esc(m.now || "Đang kiểm tra quyền truy cập")}</span>
-        <span class="muted small" data-elapsed>${secs(now)}</span>${icon("chevron", "chev")}</summary>
-      <ol class="think-steps">${m.steps.map((s) => `<li class="${s.ok === false ? "bad" : ""}">${icon(s.ok === false ? "x" : "check")}<span>${esc(s.text)}</span><span class="muted small">${secs(s.ms)}</span></li>`).join("")}</ol>
+  const idx = CHAT.indexOf(m);
+  const last = m.steps.length ? m.steps[m.steps.length - 1] : null;
+  return `<details class="thinking progress" ${m.open === false ? "" : "open"} ontoggle="CHAT[${idx}] && (CHAT[${idx}].open = this.open)">
+      <summary role="status" aria-live="polite"><span class="pulse"></span><span class="shimmer">${esc(m.now || "Đang kiểm tra quyền truy cập")}</span>
+        <span class="muted small th-elapsed" data-elapsed>${secs(now)}</span>${icon("chevron", "chev")}</summary>
+      <ol class="think-steps">${m.steps.map((s, k) => `<li class="${s.ok === false ? "bad" : ""}">${icon(s.ok === false ? "x" : "check")}<span>${esc(s.text)}</span><span class="muted small">${secs(s.ms)}</span></li>`).join("")}${
+        last ? `<li class="doing"><span class="pulse sm"></span><span>${esc(m.now || "Đang xử lý")}…</span></li>` : ""}</ol>
     </details>`;
 }
+
+const CONFLICT_RE = /^Lưu ý: tài liệu khác ghi\s*/;
+const isConflict = (c) => CONFLICT_RE.test(c.text || "");
+const FACT_STEP = "Chỉ mục dữ kiện: trả lời bằng tra cứu";
+const FOLLOWUPS = ["Trích nguyên văn đoạn liên quan", "Giải thích chi tiết hơn", "Còn tài liệu nào khác nói về nội dung này không?"];
 
 // One reading of an answer: prose for one claim, bullets for several, quotes for full text.
 function answerBody(r, i, animate) {
   let w = 0;
   const words = (t) => animate ? t.split(/(\s+)/).map((x) => x.trim() ? `<span class="w" style="animation-delay:${Math.min(900, (w++) * 18)}ms">${esc(x)}</span>` : x).join("") : esc(t);
   const refs = (c) => c.refs.map((n) => `<button class="ref" data-n="${n}" title="${esc((r.citations.find((x) => x.n === n) || {}).name || "")}" aria-label="Nguồn ${n}">${n}</button>`).join("");
-  const flag = (c) => (c.ocr_doubt || []).length ? ` <span class="chip warn" title="Bộ đọc OCR thứ hai không đọc ra đúng con số này — hãy đối chiếu ảnh gốc trong khung nguồn">số từ bản scan chưa xác nhận: ${esc(c.ocr_doubt.join(", "))}</span>`
-    : c.uncertain ? ' <span class="chip warn" title="Điểm khớp ý thấp — hãy đọc câu trích">chưa chắc</span>' : "";
-  if (r.verbatim) return `<div class="quotes">${r.claims.map((c) => `<blockquote>${words(c.text.replace(/^“|”$/g, ""))}${refs(c)}${flag(c)}</blockquote>`).join("")}</div>`;
-  if (r.claims.length === 1) return `<p class="prose">${words(r.claims[0].text)}${refs(r.claims[0])}${flag(r.claims[0])}</p>`;
-  return `<ul class="prose">${r.claims.map((c) => `<li>${words(c.text)}${refs(c)}${flag(c)}</li>`).join("")}</ul>`;
+  const flag = (c) => {
+    const n = (c.refs || [])[0], cit = r.citations.find((x) => x.n === n);
+    const go = (label, cls) => n ? `<button type="button" class="flag ${cls}" data-n="${n}" title="Mở nguồn${cit && cit.crop ? " và ảnh trang gốc" : ""} để đối chiếu">${label}</button>` : `<span class="flag ${cls}">${label}</span>`;
+    return (c.ocr_doubt || []).length ? " " + go(`${icon("eye")} số đọc từ ảnh, nên kiểm tra: ${esc(c.ocr_doubt.join(", "))}`, "ocr")
+      : c.uncertain ? ' <span class="flag" title="Điểm khớp ý thấp — hãy đọc câu trích">chưa chắc, nên kiểm tra</span>' : "";
+  };
+  const normal = r.claims.filter((c) => !isConflict(c)), conflicts = r.claims.filter(isConflict);
+  const warn = conflicts.length ? `<div class="conflict" role="note"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg><div><b>Tài liệu khác ghi số liệu khác</b>
+      ${conflicts.map((c) => `<p>${esc(c.text.replace(CONFLICT_RE, "").replace(/^./, (x) => x.toUpperCase()))}${refs(c)}</p>`).join("")}
+      <small>Hãy đối chiếu các nguồn trước khi dùng số liệu.</small></div></div>` : "";
+  let main;
+  if (r.verbatim) main = `<div class="quotes">${normal.map((c) => `<blockquote>${words(c.text.replace(/^“|”$/g, ""))}${refs(c)}${flag(c)}</blockquote>`).join("")}</div>`;
+  else if (normal.length === 1) main = `<p class="prose">${words(normal[0].text)}${refs(normal[0])}${flag(normal[0])}</p>`;
+  else if (normal.length) main = `<ul class="prose">${normal.map((c) => `<li>${words(c.text)}${refs(c)}${flag(c)}</li>`).join("")}</ul>`;
+  else main = "";
+  return main + warn;
 }
 
 function renderAnswer(r, i) {
@@ -632,15 +652,18 @@ function renderAnswer(r, i) {
   const animate = !!(m && m.fresh);
   const chips = [r.approved ? `<span class="chip ok">${icon("check")} Ban IPO đã duyệt${r.edited ? " · có hiệu đính" : ""}</span>` : "",
     r.withdrawn ? `<span class="chip warn" title="Quyền của bạn đã thay đổi sau khi duyệt">${r.withdrawn} ý đã rút lại</span>` : "",
+    (r.trace || []).some((s) => String(s.step).startsWith(FACT_STEP)) ? `<span class="chip brand" title="Số liệu được tra thẳng từ chỉ mục dữ kiện của tài liệu, không do mô hình AI viết lại">${icon("search")} Tra cứu trực tiếp từ tài liệu</span>` : "",
     r.recap ? `<span class="chip">${icon("check")} Tổng hợp từ cuộc trò chuyện</span>` : "",
     r.standalone_question && !r.recap ? `<span class="chip" title="Câu hỏi nối tiếp được hiểu theo ngữ cảnh">Hiểu là: ${esc(r.standalone_question)}</span>` : ""].join("");
   const sources = `<div class="sources"><span class="src-label">Nguồn</span>${r.citations.map((c) =>
     `<button class="src" data-n="${c.n}" title="${esc(c.name)} · ${esc(c.locator)}"><b>${c.n}</b>${ftype((c.name.split(".").pop() || "").toLowerCase())}<span>${esc(c.name)}</span></button>`).join("")}</div>`;
   const fb = r.audit_seq && !r.approved ? `<button class="act ${m && m.fb === "up" ? "on" : ""}" data-fb="up" title="Câu trả lời đúng" aria-label="Đúng">${icon("thumbUp")}</button>
       <button class="act ${m && m.fb === "down" ? "on" : ""}" data-fb="down" title="Câu trả lời sai" aria-label="Sai">${icon("thumbDown")}</button>` : "";
+  const follow = m && m === CHAT[CHAT.length - 1] && !r.approved && (r.citations || []).length
+    ? `<div class="followups"><span class="src-label">Hỏi tiếp</span>${FOLLOWUPS.map((q) => `<button type="button" data-q="${esc(q)}">${esc(q)}</button>`).join("")}</div>` : "";
   return `${chips ? `<div class="chips">${chips}</div>` : ""}<div class="answer ${animate ? "reveal" : ""}">${answerBody(r, i, animate)}</div>
     ${r.notice ? notice("warm small-notice", "users", r.notice) : ""}${sources}
-    <div class="actions"><button class="act" data-copy title="Sao chép câu trả lời kèm nguồn" aria-label="Sao chép">${icon("copy")}</button>${fb}${traceBtn}<span class="meta">${esc(meta)}</span></div>`;
+    <div class="actions"><button class="act labeled" data-copy title="Sao chép câu trả lời kèm nguồn" aria-label="Sao chép câu trả lời">${icon("copy")}<span>Sao chép</span></button>${fb}${traceBtn}<span class="meta">${esc(meta)}</span></div>${follow}`;
 }
 
 // ------------------------------------------------------------------ sources / checks panel
@@ -691,10 +714,11 @@ function wireAnswer(el, i) {
     catch (e) { toast(e.message, "bad"); }
   });
   $$("[data-copy]", el).forEach((b) => b.onclick = async () => {
-    try { await navigator.clipboard.writeText(answerText(m.r)); b.innerHTML = icon("check"); setTimeout(() => { b.innerHTML = icon("copy"); }, 1400); }
+    try { await navigator.clipboard.writeText(answerText(m.r)); b.innerHTML = icon("check") + "<span>Đã chép</span>"; setTimeout(() => { b.innerHTML = icon("copy") + "<span>Sao chép</span>"; }, 1400); }
     catch { toast("Không sao chép được", "bad"); }
   });
-  $$(".ref, .src", el).forEach((b) => b.onclick = () => openPanel(i, "src", Number(b.dataset.n)));
+  $$("[data-q]", el).forEach((b) => b.onclick = () => ask(b.dataset.q));
+  $$(".ref, .src, .flag[data-n]", el).forEach((b) => b.onclick = () => openPanel(i, "src", Number(b.dataset.n)));
   $$("[data-trace]", el).forEach((b) => b.onclick = () => openPanel(i, "trace"));
   if (m && m.fresh) setTimeout(() => { m.fresh = false; }, 1200);
 }
