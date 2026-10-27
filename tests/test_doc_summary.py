@@ -16,7 +16,10 @@ def summarise(client, oid, item_id, question=None, lang=None):
     return client.post("/api/chat", headers=login(client, oid), json=body)
 
 
-def test_off_by_default_phase_2(client):
+def test_on_for_phase_1_and_can_be_turned_off(client, monkeypatch):
+    assert settings.doc_summary
+    assert client.get("/api/me", headers=login(client, "inv-a1")).json()["features"] == {"doc_summary": True}
+    monkeypatch.setattr(settings, "doc_summary", False)
     assert summarise(client, "inv-a1", "a1").status_code == 403
     assert client.get("/api/me", headers=login(client, "inv-a1")).json()["features"] == {"doc_summary": False}
 
@@ -24,6 +27,18 @@ def test_off_by_default_phase_2(client):
 @pytest.fixture()
 def on(monkeypatch):
     monkeypatch.setattr(settings, "doc_summary", True)
+
+
+def test_role_mode_needs_a_role_that_may_summarise(client, on, monkeypatch, seen):
+    """DR_ANSWER_MODE=role (BR-04): without Investor.AI.Summarize or Staff.AI the picked document is not summarised,
+    neither by the API check (token roles) nor inside ask (mirror roles); the model is never called."""
+    monkeypatch.setattr(settings, "answer_mode", "role")
+    assert summarise(client, "inv-a1", "a1").status_code == 403
+    assert client.get("/api/me", headers=login(client, "inv-a1")).json()["features"] == {"doc_summary": False}
+    assert client.get("/api/me", headers=login(client, "staff-1")).json()["features"] == {"doc_summary": True}
+    r = answer_mod.summarize_document(appmod.S.tenant, appmod.S.index, "inv-a1", ["Investor.AI", "Investor.AI.Summarize"],
+                                      "a1", appmod.S.deps)      # token says yes, the mirror does not
+    assert r["refused"] and not r["citations"] and not seen
 
 
 @pytest.fixture()

@@ -27,6 +27,7 @@ from dr.security import guard, pii
 from dr.tenant.service import FakeTenant
 
 NO_ROLE_MESSAGE = "Tài khoản của bạn chưa được cấp quyền sử dụng trợ lý AI trong Data Room."
+NO_SUMMARY_ROLE_MESSAGE = "Tài khoản của bạn chưa được cấp quyền tóm tắt tài liệu."
 FOCUSED_PASSAGES = 3   # retry size when the model finds nothing although the reranker found a strong match
 RETRY_MIN_RERANK = 0.5
 
@@ -453,8 +454,9 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
             qvec = deps.embed_query(q_search)
     # ---- what kind of answer the question asks for (fact / summary / compare / list / full text)
     plan = intent.plan_for(question)
-    if settings.answer_mode == "role" and not (
-            {"Investor.AI.Summarize", "Staff.AI"} & set(g.detail.get("roles_mirror", []))):
+    may_summarise = settings.answer_mode != "role" or bool(
+        {"Investor.AI.Summarize", "Staff.AI"} & set(g.detail.get("roles_mirror", [])))
+    if not may_summarise:
         plan = intent.PLANS["full"]                       # BRD v1.4 BR-04: no summarize role -> quotes only
     codes, files_named = intent.named_documents(question)
     whole_doc = document_chunks(oid, codes, files_named) if (codes or files_named) and plan.intent != "fact" else []
@@ -463,6 +465,9 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
         plan = intent.PLANS["summary"]
         whole_doc = document_chunks(oid, codes, files_named)
     if item_id:                                  # a document the user picked to summarise (BRD mục 3 #5)
+        if not may_summarise:
+            trace.add("Vai trò không có quyền tóm tắt (BR-04)", False)
+            return refuse(NO_SUMMARY_ROLE_MESSAGE, kind="no_summary_role")
         plan, whole_doc = DOC_PLAN, part or item_chunks(oid, item_id)
         if not whole_doc:
             return nothing_found()

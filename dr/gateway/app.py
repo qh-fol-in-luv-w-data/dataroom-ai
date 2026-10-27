@@ -241,7 +241,7 @@ def me(claims: dict = Depends(current)):
             "type": u.get("type", "guest"), "roles": claims["roles"], "groups": _groups_of(oid),
             "sites": [{"id": s["id"], "name": s["name"]} for s in S.tenant.sites.values()
                       if set(s.get("groups", [])) & set(_groups_of(oid))],
-            "features": {"doc_summary": settings.doc_summary},
+            "features": {"doc_summary": _may_summarise(claims["roles"])},
             "exp": claims["exp"]}
 
 
@@ -266,11 +266,19 @@ def _ask(claims: dict, body: ChatIn, on_step=None) -> dict:
     return r
 
 
+def _may_summarise(roles: list[str]) -> bool:
+    """BRD mục 3 #5 is on (DR_DOC_SUMMARY); with DR_ANSWER_MODE=role (BR-04) only a role that may summarise."""
+    return settings.doc_summary and (settings.answer_mode != "role"
+                                     or bool({"Investor.AI.Summarize", "Staff.AI"} & set(roles)))
+
+
 def _chat_precheck(claims: dict, body: ChatIn | None = None) -> None:
     if claims.get("admin"):
         raise HTTPException(400, "Hãy chọn một danh tính người dùng để hỏi")
     if body is not None and body.item_id and not settings.doc_summary:
         raise HTTPException(403, "Chức năng tóm tắt một tài liệu chưa được bật")
+    if body is not None and body.item_id and not _may_summarise(claims["roles"]):
+        raise HTTPException(403, "Tài khoản của bạn chưa được cấp quyền tóm tắt tài liệu")
     if S.deps is None:
         raise HTTPException(503, "Model đang khởi động, thử lại sau ít giây")
     wait = ratelimit.limiter.check(claims["oid"])

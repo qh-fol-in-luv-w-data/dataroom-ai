@@ -52,6 +52,8 @@ EN = {
         "The AI assistant is paused to keep access control safe. Please try again later.",
     "Tài khoản của bạn chưa được cấp quyền sử dụng trợ lý AI trong Data Room.":
         "Your account has not been granted access to the Data Room AI assistant.",
+    "Tài khoản của bạn chưa được cấp quyền tóm tắt tài liệu.":
+        "Your account has not been granted document summaries.",
     ("Câu hỏi có dấu hiệu yêu cầu trợ lý bỏ qua quy tắc, tiết lộ cấu hình hoặc vượt quyền, nên không được xử lý. "
      "Hãy hỏi trực tiếp về nội dung tài liệu."):
         "The question appears to ask the assistant to bypass its rules, reveal its configuration or exceed your "
