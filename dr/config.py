@@ -59,6 +59,9 @@ class Settings:
     # the app ingests new/changed files in a background thread; turn off while scripts/ingest.py runs a bulk load
     # (two ingesters on one GPU also crash Metal: PaddleOCR in the app next to the reranker)
     background_ingest: bool = _env("DR_BACKGROUND_INGEST", "1") == "1"
+    # summary of one document the user picks (BRD mục 3 #5): brought into Phase 1 at the team's request; BRULE-07
+    # keeps it Phase 2 unless the Business Owner decides otherwise, so that sign-off is still needed. 0 = off
+    doc_summary: bool = _env("DR_DOC_SUMMARY", "1") == "1"
     input_guard: bool = _env("DR_INPUT_GUARD", "1") == "1"   # layer 2: normalisation + injection rules + classifier
     mask_pii: bool = _env("DR_MASK_PII", "1") == "1"         # mask personal identifiers in questions, answers, audit
     rate_per_minute: int = int(_env("DR_RATE_MIN", "8"))

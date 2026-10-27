@@ -27,6 +27,7 @@ from dr.security import guard, pii
 from dr.tenant.service import FakeTenant
 
 NO_ROLE_MESSAGE = "Tài khoản của bạn chưa được cấp quyền sử dụng trợ lý AI trong Data Room."
+NO_SUMMARY_ROLE_MESSAGE = "Tài khoản của bạn chưa được cấp quyền tóm tắt tài liệu."
 FOCUSED_PASSAGES = 3   # retry size when the model finds nothing although the reranker found a strong match
 RETRY_MIN_RERANK = 0.5
 
@@ -149,6 +150,94 @@ def document_chunks(oid: str, codes: list[str], files: list[str], limit: int = 4
     return [r[0] for r in rows]
 
 
+def item_chunks(oid: str, item_id: str, limit: int = 400) -> list[int]:
+    """All current chunks, in reading order, of one document the user picked (RLS: none if not readable
+    or not usable with AI)."""
+    from dr.db import pg
+    with pg.as_principal(oid) as cur:
+        rows = cur.execute("SELECT c.chunk_id FROM chunks c JOIN items i ON i.item_id = c.item_id AND i.ctag = c.ctag "
+                           "WHERE c.item_id = %s ORDER BY c.ordinal LIMIT %s", (item_id, limit)).fetchall()
+    return [r[0] for r in rows]
+
+
+# Summary of a picked document (BRD mục 3 #5). The instruction is fixed here, never taken from the client and
+# never holding the file name, so no user- or uploader-written text reaches the model outside the
+# <untrusted_document> blocks; the input guard (meant for typed questions) is therefore not run on it.
+DOC_SUMMARY_Q = {
+    "vi": ("Tóm tắt đầy đủ tài liệu này theo đúng thứ tự của tài liệu, nêu mọi nội dung chính (các bên liên quan, "
+           "mục đích, số liệu, ngày tháng, điều khoản và nghĩa vụ, quyết định, kết luận), không bỏ sót phần nào."),
+    "en": ("Summarise this document in full, in the document's order, stating every main point (parties, purpose, "
+           "figures, dates, terms and obligations, decisions, conclusions), leaving no part out."),
+}
+DOC_PLAN = intent.Plan("summary", 60, 60, 48, 12, False, False)   # one part: every chunk of it, up to 12 points
+DOC_PART_CHARS = 4000    # characters of one part: small enough that 12 points cover it
+SUMMARY_PARTS = 6        # a longer document is summarised in at most this many consecutive parts (one model call each)
+
+
+def summary_parts(sizes: list[tuple[int, int, int]], budget: int, max_sentences: int) -> list[list[int]]:
+    """sizes: (chunk_id, characters, sentences) in reading order -> consecutive runs of chunks, each small
+    enough to be read whole by one model call, at most SUMMARY_PARTS runs of about equal length."""
+    if not sizes:
+        return []
+    chars, sents = sum(s[1] for s in sizes), sum(s[2] for s in sizes)
+    k = min(SUMMARY_PARTS, max(1, -(-chars // max(1, budget)), -(-sents // max(1, max_sentences))))
+    runs, cur, used = [], [], 0
+    for cid, n, _ in sizes:
+        if cur and used + n > chars * (len(runs) + 1) / k and len(runs) < k - 1:
+            runs.append(cur)
+            cur = []
+        cur.append(cid)
+        used += n
+    return runs + [cur]
+
+
+def summarize_document(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], item_id: str,
+                       deps: Deps, lang: str = "vi", on_step: Callable | None = None) -> dict:
+    """The whole picked document, nothing left out: each consecutive part is summarised, verified and
+    live-checked like any answer, and the points are joined in reading order with their sources."""
+    from dr.models.llm import split_sentences
+    question = DOC_SUMMARY_Q.get(lang, DOC_SUMMARY_Q["vi"])
+    ids = item_chunks(oid, item_id)
+    texts = gates.fetch_passages(oid, ids)
+    runs = summary_parts([(c, len(texts[c]["text"]), len(split_sentences(texts[c]["text"]))) for c in ids if c in texts],
+                         DOC_PART_CHARS, DOC_PLAN.sentences) or [None]
+    results = []
+    for k, run in enumerate(runs, 1):
+        if len(runs) > 1 and on_step:
+            on_step({"step": f"Tóm tắt phần {k}/{len(runs)}", "ok": True, "ms": 0})
+        r = ask(tenant, index, oid, roles, question, deps, on_step=on_step, item_id=item_id, part=run)
+        if r["refused"] and r.get("message") != lang_mod.tr(NEUTRAL_REFUSAL, r.get("lang", lang)):
+            return r                     # blocked, unavailable, retry…: no partial summary is released
+        results.append(r)
+    good = [r for r in results if not r["refused"] and r["claims"]]
+    if len(results) == 1 or not good:
+        return good[0] if good else results[0]
+    claims, cites, number = [], [], {}
+    for r in good:                       # citations renumbered across parts, the same sentence cited once
+        remap = {}
+        for c in r["citations"]:
+            key = (c["item_id"], c.get("chunk_id"), c.get("quote"))
+            if key not in number:
+                number[key] = len(cites) + 1
+                cites.append({**c, "n": number[key]})
+            remap[c["n"]] = number[key]
+        claims += [{**cl, "refs": [remap[n] for n in cl["refs"] if n in remap]} for cl in r["claims"]]
+    trace = [s for k, r in enumerate(results, 1)
+             for s in [{"step": f"Tóm tắt phần {k}/{len(runs)}", "ok": True, "ms": 0}] + r["trace"]]
+    return {**good[-1], "claims": claims, "citations": cites, "trace": trace, "parts": len(runs)}
+
+
+def spread(seq: list, n: int) -> list:
+    """n items evenly spaced over seq, first and last included, in order: a long document is read at
+    its beginning, middle and end instead of its first pages only."""
+    seq = list(seq)
+    if n <= 0 or len(seq) <= n:
+        return seq
+    if n == 1:
+        return seq[:1]
+    return [seq[round(k * (len(seq) - 1) / (n - 1))] for k in range(n)]
+
+
 def sheet_chunks(oid: str, item_id: str, sheet: str, limit: int = 60) -> list[int]:
     """All current chunks of one spreadsheet sheet, in reading order, that this user can read (RLS)."""
     from dr.db import pg
@@ -178,8 +267,8 @@ def focus_sentences(question: str, llm_in: list[dict], deps: Deps, trace: Trace,
                     budget: int | None = None) -> list[dict]:
     """Keep only the n sentences the reranker scores highest (in their original order). The kept
     text is a subset of each passage, so quotes still verify against the full passage; passages
-    left with no sentence are not sent. keep_order_only: a whole named document is summarised,
-    so the first n sentences in reading order are kept instead."""
+    left with no sentence are not sent. keep_order_only: a whole document is summarised, so
+    sentences spread over all of it are kept in reading order instead (as many as the budget holds)."""
     from dr.models.llm import split_sentences
     n = settings.max_sentences if n is None else n
     if not n or not deps.rerank:
@@ -194,7 +283,8 @@ def focus_sentences(question: str, llm_in: list[dict], deps: Deps, trace: Trace,
             seen.add(key)
             sents.append((i, j, _clip(s)))
     if keep_order_only:
-        ranked = [(i, j) for i, j, _ in sents]
+        avg = sum(len(s) for _, _, s in sents) / max(1, len(sents))
+        ranked = spread([(i, j) for i, j, _ in sents], min(n, max(1, int(budget // avg))) if budget and avg else n)
     else:
         texts = [s for _, _, s in sents]
         scores = deps.rerank(question, texts)
@@ -263,8 +353,11 @@ def crop_for(page_ref: str | None, quote: str) -> dict | None:
 
 def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], question: str,
         deps: Deps, scope_site: str | None = None, on_step: Callable | None = None,
-        history: list[conversation.Turn] | None = None) -> dict:
+        history: list[conversation.Turn] | None = None, item_id: str | None = None,
+        part: list[int] | None = None) -> dict:
     trace = Trace(on_step=on_step)
+    if item_id and question not in DOC_SUMMARY_Q.values():
+        question = DOC_SUMMARY_Q["vi"]            # a picked document only ever gets the fixed instruction
     question = guard.strip_controls(question).strip()[:1000]
     lang = lang_mod.detect(question)
 
@@ -292,7 +385,10 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
         return refuse(NEUTRAL_REFUSAL)
 
     # ---- layer 2: input security (normalise, injection rules, classifier, personal data)
-    if settings.input_guard:
+    if item_id:
+        qvec = None
+        trace.add("Lớp đầu vào – câu lệnh tóm tắt cố định của hệ thống (không có chữ người dùng)", True)
+    elif settings.input_guard:
         clean_q = guard.clean(question)
         qvec = deps.embed_query(clean_q) if deps.embed_query else None
         v = guard.inspect(question, qvec, deps.embed_many)
@@ -373,8 +469,9 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
             qvec = deps.embed_query(q_search)
     # ---- what kind of answer the question asks for (fact / summary / compare / list / full text)
     plan = intent.plan_for(question)
-    if settings.answer_mode == "role" and not (
-            {"Investor.AI.Summarize", "Staff.AI"} & set(g.detail.get("roles_mirror", []))):
+    may_summarise = settings.answer_mode != "role" or bool(
+        {"Investor.AI.Summarize", "Staff.AI"} & set(g.detail.get("roles_mirror", [])))
+    if not may_summarise:
         plan = intent.PLANS["full"]                       # BRD v1.4 BR-04: no summarize role -> quotes only
     codes, files_named = intent.named_documents(question)
     whole_doc = document_chunks(oid, codes, files_named) if (codes or files_named) and plan.intent != "fact" else []
@@ -382,6 +479,13 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
             r"noi (ve )?(noi dung )?gi|about what|what does", unidecode(question).lower()):
         plan = intent.PLANS["summary"]
         whole_doc = document_chunks(oid, codes, files_named)
+    if item_id:                                  # a document the user picked to summarise (BRD mục 3 #5)
+        if not may_summarise:
+            trace.add("Vai trò không có quyền tóm tắt (BR-04)", False)
+            return refuse(NO_SUMMARY_ROLE_MESSAGE, kind="no_summary_role")
+        plan, whole_doc = DOC_PLAN, part or item_chunks(oid, item_id)
+        if not whole_doc:
+            return nothing_found()
     if recap_chunks:
         plan, whole_doc = intent.PLANS["summary"], recap_chunks
     parts = [glossed(p) for p in intent.sub_questions(q_core)] if not whole_doc and not plan.verbatim else []
@@ -393,7 +497,8 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
     versions: dict[int, list[int]] = {}      # representative chunk -> other copies / versions of its text
     if whole_doc:
         hits = [(c, 1.0) for c in whole_doc]
-        trace.add("Đọc toàn bộ tài liệu được nêu tên (RLS)", True, chunks=len(hits))
+        trace.add("Đọc toàn bộ tài liệu được chọn (RLS)" if item_id else "Đọc toàn bộ tài liệu được nêu tên (RLS)",
+                  True, chunks=len(hits))
     else:
         # a several-part question searches the whole question AND each part: on the evaluation set the
         # answer passages reached the model for 9/13 parts this way, 7/13 whole-question only, 8/13 parts only
@@ -505,7 +610,7 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
 
     n_pass = settings.max_passages if plan.intent == "fact" else plan.passages
     if whole_doc:
-        selected = [c for c in order if passages[c]["item_id"] in set(chosen)][:60]
+        selected = spread([c for c in order if passages[c]["item_id"] in set(chosen)], 60)
     else:
         selected = select_passages(order, passages, set(chosen), n_pass, plan.per_file)
     if not selected:
@@ -756,7 +861,7 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
     trace.add("Ghi nhật ký (chuỗi hash)", True, audit_seq=seq)
     result = {"refused": False, "message": None, "claims": claims_out, "citations": cites, "trace": trace.steps,
               "audit_seq": seq, "lang": lang, "mode": plan.intent, "verbatim": verbatim, "notice": notice,
-              "standalone_question": question if question != asked else None, "recap": bool(recap_chunks),
+              "standalone_question": question if question != asked and not item_id else None, "recap": bool(recap_chunks),
               "conflicts": found_conflicts}
     # ---- sensitive questions (BR-08): investors get the answer only after a reviewer approves it
     if topics and not is_staff and settings.sensitive_mode == "review":

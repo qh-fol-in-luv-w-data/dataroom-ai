@@ -146,7 +146,7 @@ const post = (path, body) => api(path, { method: "POST", body });
 
 // Open a cited file: the backend checks this account's access with SharePoint first and only then
 // returns a link (Microsoft 365: the file's own URL, which SharePoint checks against the same SSO
-// login again; demo: a single-use ticket). No public or shareable link is ever shown.
+// login again; demo: a single-use ticket to the view-only viewer). No public or shareable link is ever shown.
 async function openFile(id) {
   const w = window.open("", "_blank");
   if (w) { w.opener = null; w.document.title = "Đang kiểm tra quyền…"; w.document.body.textContent = "Đang kiểm tra quyền truy cập…"; }
@@ -281,6 +281,9 @@ function renderLoginMicrosoft(message) {
 
 // ------------------------------------------------------------------ shell + router
 const NAV = [
+  { sec: "Tài liệu", items: [
+    { id: "search", label: "Tìm hồ sơ", icon: "search", who: "user" },
+  ] },
   { sec: "Quản trị Data Room", items: [
     { id: "perms", label: "Phân quyền", icon: "key", who: "admin" },
     { id: "matrix", label: "Ma trận quyền", icon: "grid", who: "admin" },
@@ -389,8 +392,10 @@ function route() {
   if (!ME) return;
   const def = isAdmin() ? "perms" : "chat";
   let id = (location.hash.replace(/^#\/?/, "") || def).split("?")[0];
-  const allowed = isAdmin() ? NAV.flatMap((s) => s.items).filter(visibleNav).map((i) => i.id) : ["chat"];
+  const navIds = NAV.flatMap((s) => s.items).filter(visibleNav).map((i) => i.id);
+  const allowed = isAdmin() ? navIds : ["chat", ...navIds];
   if (!allowed.includes(id)) { id = def; history.replaceState(null, "", "#/" + id); }
+  else if (!location.hash) history.replaceState(null, "", "#/" + id);   // an answer is drawn only on #/chat
   $$(".sb-nav a").forEach((a) => a.classList.toggle("active", a.dataset.id === id));
   $("#sidebar").classList.remove("open");
   closePanel();
@@ -578,7 +583,7 @@ function openPanel(i, tab, n) {
       <div class="cite-loc">${esc(SITE_LABEL[c.site_id] || c.site_id)} · ${esc(c.locator)}${c.ocr ? " · bản scan (OCR)" : ""}</div>
       <blockquote>${esc(c.quote)}</blockquote>
       ${c.crop ? `<figure class="crop"><img loading="lazy" alt="Vùng tương ứng trên bản scan gốc" src="/crop/${encodeURIComponent(c.item_id)}?ticket=${encodeURIComponent(c.crop.ticket || "")}&page=${encodeURIComponent(c.crop.page)}${c.crop.box ? "&box=" + c.crop.box.join(",") : ""}"><figcaption>${c.crop.box ? "Vùng gốc trên bản scan (đã nắn thẳng)" : "Trang scan gốc (đã nắn thẳng)"}</figcaption></figure>` : ""}
-      <button class="btn sm" data-open="${esc(c.item_id)}" title="Hệ thống kiểm tra quyền của tài khoản bạn với SharePoint rồi mới mở file">${icon("file")} Mở file ${icon("ext")}</button>
+      <button class="btn sm" data-open="${esc(c.item_id)}" title="Hệ thống kiểm tra quyền của tài khoản bạn rồi mới cho xem file (chỉ xem, không tải về)">${icon("file")} Xem file ${icon("ext")}</button>
     </div>`).join("");
   const trace = `<ol class="steps">${(r.trace || []).map((s) => {
     const { step, ok, ms, ...rest } = s;
@@ -618,7 +623,7 @@ function wireAnswer(el, i) {
   if (m && m.fresh) setTimeout(() => { m.fresh = false; }, 1200);
 }
 
-async function ask(q) {
+async function ask(q, extra = {}) {      // extra: { item_id } for the summary of a picked document
   if (!q || CHAT.some((m) => !m.r)) return;
   if (!CUR) {                                   // first question opens a conversation
     const c = { id: "c" + Date.now(), title: q.length > 60 ? q.slice(0, 57) + "…" : q, items: CHAT };
@@ -633,7 +638,7 @@ async function ask(q) {
   }, 100);
   try {
     m.r = await postStream("/api/chat/stream", { question: q, scope_site: $("#scope-site")?.value || null,
-                                                 conversation_id: CUR },
+                                                 conversation_id: CUR, ...extra },
                            (ev) => onProgress(m, ev));
     m.r.elapsed_ms = Date.now() - m.t0;
     m.fresh = true;
@@ -708,7 +713,7 @@ async function pageReview(page) {
       <details class="trace"><summary>${icon("file")} ${d.answer.citations.length} trích dẫn</summary>${d.answer.citations.map((c) =>
         `<div class="cite" style="margin-top:8px"><div class="cite-top"><span class="cite-n">${c.n}</span>${ftype((c.name.split(".").pop() || "").toLowerCase())}<span class="cite-name">${esc(c.name)}</span></div>
         <div class="cite-loc">${esc(c.locator)}</div><blockquote>${esc(c.quote)}</blockquote>
-        <button class="linkbtn" data-open="${esc(c.item_id)}">Mở file ${icon("ext")}</button></div>`).join("")}</details>
+        <button class="linkbtn" data-open="${esc(c.item_id)}">Xem file ${icon("ext")}</button></div>`).join("")}</details>
       ${d.status === "pending" ? `<div class="inline-form"><input class="input" data-note placeholder="Ghi chú cho người hỏi (khi từ chối) hoặc cho nhật ký" style="flex:1;max-width:none">
         <button class="btn danger" data-act="reject">${icon("x")} Từ chối</button>
         <button class="btn primary" data-act="approve">${icon("check")} Duyệt & phát hành</button></div>`
@@ -723,7 +728,8 @@ async function pageReview(page) {
 }
 
 // ------------------------------------------------------------------ search
-let SEARCH_Q = "", SEARCH_RES = null;
+let SEARCH_Q = "", SEARCH_SITE = "", SEARCH_KIND = "", SEARCH_RES = null;
+const KIND_LABEL = { pdf: "PDF", word: "Word", excel: "Excel", slide: "PowerPoint", email: "Email", image: "Ảnh" };
 function highlight(text, terms) {
   let out = esc(text);
   for (const t of terms || []) {
@@ -733,27 +739,43 @@ function highlight(text, terms) {
   return out;
 }
 async function pageSearch(page) {
+  const opt = (v, label, cur) => `<option value="${esc(v)}" ${v === cur ? "selected" : ""}>${esc(label)}</option>`;
   page.innerHTML = `<form class="toolbar" id="sform"><div class="search" style="flex:1;max-width:none">${icon("search")}
-      <input class="input" id="sq" placeholder="Ví dụ: hợp đồng EPC Hàm Kiệm, biên bản nghiệm thu công suất, room ngoại…" value="${esc(SEARCH_Q)}"></div>
+      <input class="input" id="sq" placeholder="Từ khóa, mô tả nội dung hoặc một phần tên file — ví dụ: biên bản họp HĐQT, thoa-thuan…" value="${esc(SEARCH_Q)}"></div>
+      <select class="input" id="ssite" style="width:auto" aria-label="Site">${opt("", "Mọi site", SEARCH_SITE)}${(ME.sites || []).map((s) => opt(s.id, s.name, SEARCH_SITE)).join("")}</select>
+      <select class="input" id="skind" style="width:auto" aria-label="Loại file">${opt("", "Mọi loại file", SEARCH_KIND)}${Object.entries(KIND_LABEL).map(([k, v]) => opt(k, v, SEARCH_KIND)).join("")}</select>
       <button class="btn primary" type="submit">Tìm</button></form><div id="sres"></div>`;
   const draw = () => {
     const r = SEARCH_RES;
-    if (!r) { $("#sres").innerHTML = '<div class="card empty">Nhập từ khóa hoặc mô tả nội dung tài liệu — không cần nhớ tên file.</div>'; return; }
+    if (!r) { $("#sres").innerHTML = '<div class="card empty">Nhập từ khóa, mô tả nội dung hoặc một phần tên file — không cần nhớ chính xác tên. Hoặc chọn site / loại file để xem danh sách.</div>'; return; }
     if (r.refused) { $("#sres").innerHTML = `<div class="card empty">${esc(r.message)}</div>`; return; }
     if (!r.results.length) { $("#sres").innerHTML = '<div class="card empty">Không tìm thấy tài liệu phù hợp trong phạm vi của bạn.</div>'; return; }
     $("#sres").innerHTML = `<p class="muted small">${r.results.length} tài liệu trong phạm vi của bạn</p>` + r.results.map((x) => `<div class="card sr">
-      <div class="cite-top">${ftype(x.ext)}<b class="cite-name">${esc(x.name)}</b><span class="chip">${esc(SITE_LABEL[x.site_id] || x.site_id)}</span>
-        ${x.ocr ? '<span class="chip info">bản scan</span>' : ""}</div>
-      <div class="muted small">${esc([x.site_id, x.path].filter(Boolean).join(" › "))} · ${esc(x.locator)}</div>
-      <p class="snip">${highlight(x.snippet, r.terms)}</p>
-      <div class="cite-foot"><button class="linkbtn" data-open="${esc(x.item_id)}">${icon("file")} Mở file ${icon("ext")}</button>
-        <span style="flex:1"></span><button class="btn sm" data-askabout="${esc(x.name)}">${icon("chat")} Hỏi về tài liệu này</button></div></div>`).join("");
+      <div class="cite-top">${ftype(x.ext)}<b class="cite-name">${esc(x.name)}</b><span class="chip">${esc(x.site_name || SITE_LABEL[x.site_id] || x.site_id)}</span>
+        ${(x.match || []).includes("name") ? '<span class="chip brand">khớp tên</span>' : ""}${x.ocr ? '<span class="chip info">bản scan</span>' : ""}</div>
+      <div class="muted small">${esc([x.path, x.label, x.locator].filter(Boolean).join(" · "))}</div>
+      ${x.snippet ? `<p class="snip">${highlight(x.snippet, r.terms)}</p>` : ""}
+      <div class="cite-foot"><button class="linkbtn" data-open="${esc(x.item_id)}">${icon("file")} Xem file ${icon("ext")}</button>
+        <span style="flex:1"></span>${ME.features?.doc_summary ? `<button class="btn sm" data-summary="${esc(x.item_id)}" data-name="${esc(x.name)}">${icon("spark")} Tóm tắt</button>` : ""}
+        <button class="btn sm" data-askabout="${esc(x.name)}">${icon("chat")} Hỏi về tài liệu này</button></div></div>`).join("");
     $$("[data-askabout]").forEach((b) => b.onclick = () => { location.hash = "#/chat"; setTimeout(() => { const q = $("#q"); if (q) { q.value = `Tài liệu ${b.dataset.askabout} nói gì về `; q.focus(); } }, 50); });
+    $$("[data-summary]").forEach((b) => b.onclick = () => {    // a new conversation holding the summary of this file
+      // the summary is in the interface language (<html lang>, Vietnamese until the UI is bilingual);
+      // the browser language is not used: many Vietnamese users browse with an English browser
+      const lang = (document.documentElement.lang || "vi").toLowerCase().startsWith("en") ? "en" : "vi";
+      const label = lang === "en" ? `Summary of: ${b.dataset.name}` : `Tóm tắt tài liệu: ${b.dataset.name}`;
+      newConversation(); setTimeout(() => ask(label, { item_id: b.dataset.summary, lang }), 50);
+    });
   };
   $("#sform").onsubmit = async (e) => {
-    e.preventDefault(); SEARCH_Q = $("#sq").value.trim(); if (!SEARCH_Q) return;
+    e.preventDefault();
+    SEARCH_Q = $("#sq").value.trim(); SEARCH_SITE = $("#ssite").value; SEARCH_KIND = $("#skind").value;
+    if (!SEARCH_Q && !SEARCH_SITE && !SEARCH_KIND) return;
+    const qs = new URLSearchParams({ q: SEARCH_Q });
+    if (SEARCH_SITE) qs.set("site", SEARCH_SITE);
+    if (SEARCH_KIND) qs.set("kind", SEARCH_KIND);
     $("#sres").innerHTML = '<div class="card empty"><span class="spinner"></span> Đang tìm…</div>';
-    try { SEARCH_RES = await api("/api/search?q=" + encodeURIComponent(SEARCH_Q)); } catch (ex) { SEARCH_RES = { refused: true, message: ex.message }; }
+    try { SEARCH_RES = await api("/api/search?" + qs); } catch (ex) { SEARCH_RES = { refused: true, message: ex.message }; }
     draw();
   };
   draw();

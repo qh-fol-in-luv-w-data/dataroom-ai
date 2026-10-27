@@ -3,7 +3,7 @@ UV      ?= $(shell command -v uv || echo $(HOME)/.local/bin/uv)
 VL_DIR  := $(HOME)/.paddlex/official_models/PaddleOCR-VL-1.6
 PORT    ?= 8000
 
-.PHONY: setup models pgvector pg-start pg-stop ocr-server data accounts public ingest migrate-search run leak-test qa-eval hard-scans ocr-eval attack-set train-guard attack-eval m365-probe run-m365 scale-test test test-all reset-db
+.PHONY: setup models pgvector pg-start pg-stop ocr-server data accounts public ingest migrate-search run leak-test qa-eval search-eval hard-scans ocr-eval attack-set train-guard attack-eval m365-probe run-m365 scale-test test test-all reset-db
 
 setup:            ## create venv + install dependencies
 	$(UV) venv --python 3.11 .venv
@@ -53,6 +53,9 @@ leak-test:        ## leak matrix on the live demo DB (every user x every marker 
 
 qa-eval:          ## end-to-end Q&A on the secret facts with the real LLM
 	$(PY) scripts/qa_eval.py
+
+search-eval:      ## UAT-01 document search: right file without its name, no leak (needs Ollama bge-m3)
+	$(PY) scripts/search_eval.py
 
 hard-scans:       ## generate 40 hard scanned documents + truth (data/eval/hard_scans)
 	$(PY) scripts/gen_hard_scans.py --n 40

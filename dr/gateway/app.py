@@ -7,7 +7,6 @@ import contextvars
 import io
 import json
 import logging
-import mimetypes
 import queue
 import threading
 import time
@@ -16,7 +15,7 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -27,7 +26,7 @@ from dr.core import answer as answer_mod
 from dr.core import conversation
 from dr.core.pgindex import make_index
 from dr.db import pg
-from dr.gateway import accounts, auth, scenarios
+from dr.gateway import accounts, auth, scenarios, viewer
 from dr.gateway import admin as admin_mod
 from dr.ingest import ocr, pipeline
 from dr.security import ratelimit
@@ -240,6 +239,7 @@ def me(claims: dict = Depends(current)):
             "type": u.get("type", "guest"), "roles": claims["roles"], "groups": _groups_of(oid),
             "sites": [{"id": s["id"], "name": s["name"]} for s in S.tenant.sites.values()
                       if set(s.get("groups", [])) & set(_groups_of(oid))],
+            "features": {"doc_summary": _may_summarise(claims["roles"])},
             "exp": claims["exp"]}
 
 
@@ -247,19 +247,36 @@ class ChatIn(BaseModel):
     question: str
     scope_site: str | None = None
     conversation_id: str | None = Field(None, max_length=64)   # turns are kept server-side (dr/core/conversation.py)
+    item_id: str | None = Field(None, max_length=64)           # a document picked for a summary (DR_DOC_SUMMARY)
+    lang: str | None = Field(None, pattern="^(vi|en)$")         # language of that summary (the user's)
 
 
 def _ask(claims: dict, body: ChatIn, on_step=None) -> dict:
-    turns = conversation.history(claims["oid"], body.conversation_id)
-    r = answer_mod.ask(S.tenant, S.index, claims["oid"], claims["roles"], body.question, S.deps,
-                       body.scope_site, on_step=on_step, history=turns)
+    if body.item_id:
+        # a picked document is summarised on its own, with the fixed instruction: the client's text is only shown
+        r = answer_mod.summarize_document(S.tenant, S.index, claims["oid"], claims["roles"], body.item_id, S.deps,
+                                          lang=body.lang or "vi", on_step=on_step)
+    else:
+        turns = conversation.history(claims["oid"], body.conversation_id)
+        r = answer_mod.ask(S.tenant, S.index, claims["oid"], claims["roles"], body.question, S.deps,
+                           body.scope_site, on_step=on_step, history=turns)
     conversation.remember(claims["oid"], body.conversation_id, body.question, r)
     return r
 
 
-def _chat_precheck(claims: dict) -> None:
+def _may_summarise(roles: list[str]) -> bool:
+    """BRD mục 3 #5 is on (DR_DOC_SUMMARY); with DR_ANSWER_MODE=role (BR-04) only a role that may summarise."""
+    return settings.doc_summary and (settings.answer_mode != "role"
+                                     or bool({"Investor.AI.Summarize", "Staff.AI"} & set(roles)))
+
+
+def _chat_precheck(claims: dict, body: ChatIn | None = None) -> None:
     if claims.get("admin"):
         raise HTTPException(400, "Hãy chọn một danh tính người dùng để hỏi")
+    if body is not None and body.item_id and not settings.doc_summary:
+        raise HTTPException(403, "Chức năng tóm tắt một tài liệu chưa được bật")
+    if body is not None and body.item_id and not _may_summarise(claims["roles"]):
+        raise HTTPException(403, "Tài khoản của bạn chưa được cấp quyền tóm tắt tài liệu")
     if S.deps is None:
         raise HTTPException(503, "Model đang khởi động, thử lại sau ít giây")
     wait = ratelimit.limiter.check(claims["oid"])
@@ -273,7 +290,7 @@ async def chat_stream(body: ChatIn, claims: dict = Depends(current)):
     """Same answer as /api/chat, with live progress: one JSON line per finished step, then the
     result line. Progress lines carry step names and timings only; the answer is released in
     one block after verification and the final permission re-check, as in /api/chat."""
-    _chat_precheck(claims)
+    _chat_precheck(claims, body)
     loop = asyncio.get_running_loop()
     events: asyncio.Queue = asyncio.Queue()
     emit = lambda ev: loop.call_soon_threadsafe(events.put_nowait, ev)
@@ -306,7 +323,7 @@ async def chat_stream(body: ChatIn, claims: dict = Depends(current)):
 
 @app.post("/api/chat")
 async def chat(body: ChatIn, claims: dict = Depends(current)):
-    _chat_precheck(claims)
+    _chat_precheck(claims, body)
 
     def run():
         with ratelimit.limiter.slots:     # bounded concurrent LLM work across all users
@@ -316,14 +333,16 @@ async def chat(body: ChatIn, claims: dict = Depends(current)):
 
 # ------------------------------------------------------------------ search, review, feedback (BRD v1.4)
 @app.get("/api/search")
-async def search(q: str = Query(..., max_length=300), site: str | None = None, claims: dict = Depends(current)):
+async def search(q: str = Query("", max_length=300), site: str | None = Query(None, max_length=64),
+                 kind: str | None = Query(None, max_length=16), claims: dict = Depends(current)):
     if claims.get("admin"):
         raise HTTPException(400, "Hãy chọn một danh tính người dùng để tìm")
     wait = ratelimit.limiter.check(claims["oid"])
     if wait:
         raise HTTPException(429, RATE_MESSAGE.format(seconds=int(wait) + 1), headers={"Retry-After": str(int(wait) + 1)})
     from dr.core.search import search_files
-    return await run_in_threadpool(search_files, S.tenant, S.index, claims["oid"], claims["roles"], q, S.deps, site)
+    return await run_in_threadpool(search_files, S.tenant, S.index, claims["oid"], claims["roles"], q, S.deps, site,
+                                   kind)
 
 
 @app.get("/api/my/drafts")
@@ -579,21 +598,54 @@ def _with_crop_tickets(result: dict, oid: str) -> dict:
 
 @app.get("/open/{item_id}")
 def open_file(item_id: str, ticket: str = Query(...)):
-    """Demo 'SharePoint viewer'. With Microsoft 365 the link is the file's webUrl instead."""
+    """Demo stand-in for the CT VDR Viewer, view only (dr/gateway/viewer.py): the file is shown, never handed out.
+    BRD 19/10: sources open in CT VDR Viewer and AI Data Room makes no viewer of its own (BRULE-08), so this
+    exists only while there is no CT VDR to link to (BRULE-06). With Microsoft 365 the link is the file's webUrl."""
     if settings.tenant_mode == "m365":
-        raise HTTPException(404, "Mở tài liệu trực tiếp trên SharePoint")
+        raise HTTPException(404, "Trình xem này chỉ dùng cho bản demo")
     claims = auth.verify_ticket(ticket, item_id, "open")
     if not claims:
-        raise HTTPException(401, "Liên kết đã hết hạn hoặc đã được dùng, hãy bấm Mở file lại")
-    if claims["oid"] == auth.ADMIN_OID or not S.tenant.sp_can_read(claims["oid"], item_id):
-        raise HTTPException(403, "SharePoint: bạn không có quyền mở tài liệu này")
-    p: Path = S.tenant.file_path(item_id)
-    mt = mimetypes.guess_type(p.name)[0] or "application/octet-stream"
-    if p.suffix.lower() == ".eml":
-        mt = "text/plain; charset=utf-8"
-    inline = p.suffix.lower() in (".pdf", ".png", ".jpg", ".jpeg", ".html", ".txt", ".md", ".csv", ".eml")
-    return FileResponse(p, media_type=mt, filename=S.tenant.items[item_id]["name"],
-                        content_disposition_type="inline" if inline else "attachment")
+        raise HTTPException(401, "Liên kết đã hết hạn hoặc đã được dùng, hãy bấm Xem file lại")
+    it, oid = _viewable(claims, item_id)
+    p, ext = S.tenant.file_path(item_id), it["ext"].lower()
+    try:
+        body = (viewer.pages_html(item_id, viewer.page_count(p, ext), auth.issue_ticket(oid, item_id, "page", ttl=1800))
+                if ext in viewer.PAGED else viewer.body_html(p, ext))
+    except Exception:
+        body = viewer.NOT_SHOWN
+    audit.append(oid, "file_view", {"item_id": item_id})
+    u = S.tenant.users.get(oid, {})
+    page, headers = viewer.response_parts(it["name"], " – ".join(v for v in (u.get("name"), u.get("email")) if v), body)
+    return HTMLResponse(page, headers=headers)
+
+
+@app.get("/open/{item_id}/page/{n}")
+def open_page(item_id: str, n: int, ticket: str = Query(...)):
+    """One page of a PDF or an image in the view-only viewer; access is checked again for every page."""
+    if settings.tenant_mode == "m365":
+        raise HTTPException(404, "Trình xem này chỉ dùng cho bản demo")
+    claims = auth.verify_ticket(ticket, item_id, "page")
+    if not claims:
+        raise HTTPException(401, "Liên kết đã hết hạn, hãy bấm Xem file lại")
+    it, _ = _viewable(claims, item_id)
+    ext = it["ext"].lower()
+    try:
+        img = viewer.page_jpeg(S.tenant.file_path(item_id), ext, n) if ext in viewer.PAGED else None
+    except Exception:
+        img = None
+    if not img:
+        raise HTTPException(404, "Không có trang này")
+    return Response(img, media_type="image/jpeg", headers=viewer.NO_STORE)
+
+
+def _viewable(claims: dict, item_id: str) -> tuple[dict, str]:
+    oid = claims["oid"]
+    if oid == auth.ADMIN_OID or not S.tenant.sp_can_read(oid, item_id):
+        raise HTTPException(403, "Bạn không có quyền xem tài liệu này")
+    it = S.tenant.items[item_id]
+    if it.get("malware"):
+        raise HTTPException(403, "Tài liệu bị đánh dấu có mã độc nên không mở được")
+    return it, oid
 
 
 @app.get("/crop/{item_id}")

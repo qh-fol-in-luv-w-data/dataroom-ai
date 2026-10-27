@@ -1,0 +1,31 @@
+{
+  "about": "UAT-01 (BRD 19/10/2026): an investor finds the right file without remembering its name. Each query describes the content and never contains the file name. 'expect' = document title (prefix) in the Sao Mai demo corpus (make data, seed 7); any file with that title inside the asker's scope counts. 'must_not' = item ids the asker may never get (other group, internal, link shared by mistake).",
+  "cases": [
+    {"user": "an.nguyen@hongha-fund.example", "q": "bản tóm tắt cáo bạch của đợt IPO", "expect": "Tóm tắt bản cáo bạch IPO SMP"},
+    {"user": "an.nguyen@hongha-fund.example", "q": "điều kiện chào bán dành cho quỹ trong nước", "expect": "Term sheet IPO SMP - Nhóm A"},
+    {"user": "an.nguyen@hongha-fund.example", "q": "lịch roadshow gặp nhà đầu tư", "expect": "Email Lịch roadshow IPO SMP"},
+    {"user": "an.nguyen@hongha-fund.example", "q": "giấy phép hoạt động điện lực của nhà máy điện gió Tuy Phong", "expect": "Giấy phép hoạt động điện lực - Điện gió Tuy Phong"},
+    {"user": "an.nguyen@hongha-fund.example", "q": "danh mục thiết bị nhà máy điện mặt trời Ea Súp", "expect": "Danh mục tài sản thiết bị ĐMT Ea Súp"},
+    {"user": "an.nguyen@hongha-fund.example", "q": "sản lượng điện từng tháng của năm 2024", "expect": "Sản lượng điện theo tháng năm 2024"},
+    {"user": "an.nguyen@hongha-fund.example", "q": "báo cáo tài chính hợp nhất ba năm gần nhất", "expect": "Báo cáo tài chính hợp nhất 2023–2025"},
+    {"user": "an.nguyen@hongha-fund.example", "q": "kế hoạch vốn đầu tư giai đoạn 2026 đến 2030", "expect": "Kế hoạch vốn đầu tư 2026–2030"},
+    {"user": "an.nguyen@hongha-fund.example", "q": "phụ lục thỏa thuận riêng với quỹ Hồng Hà", "expect": "Phụ lục thỏa thuận riêng Hồng Hà"},
+    {"user": "an.nguyen@hongha-fund.example", "q": "hợp đồng vay vốn dài hạn với ngân hàng", "expect": "Hợp đồng tín dụng dài hạn"},
+    {"user": "an.nguyen@hongha-fund.example", "q": "báo cáo vận hành quý 2 năm 2026", "expect": "Báo cáo vận hành quý 2/2026"},
+    {"user": "an.nguyen@hongha-fund.example", "q": "giay chung nhan dang ky doanh nghiep nha may Ham Kiem", "expect": "Giấy chứng nhận đăng ký doanh nghiệp - ĐMT Hàm Kiệm", "note": "không dấu"},
+    {"user": "an.nguyen@hongha-fund.example", "q": "investor presentation slides for the IPO", "expect": "Thuyết trình nhà đầu tư – IPO SMP", "note": "tiếng Anh trên tài liệu tiếng Việt"},
+    {"user": "sarah.lim@mekongfrontier.example", "q": "ghi nhớ về tỷ giá và cách thanh toán cho nhóm B", "expect": "Ghi nhớ cơ chế thanh toán và tỷ giá - Nhóm B"},
+    {"user": "sarah.lim@mekongfrontier.example", "q": "hợp đồng bảo lãnh phát hành cổ phiếu", "expect": "Hợp đồng bảo lãnh phát hành"},
+    {"user": "sarah.lim@mekongfrontier.example", "q": "room ngoại và thủ tục mở tài khoản", "expect": "Email Cập nhật về room ngoại và thủ tục mở tài khoản"},
+    {"user": "sarah.lim@mekongfrontier.example", "q": "biên bản làm việc với Mekong Frontier", "expect": "Biên bản trao đổi Mekong Frontier Capital"},
+    {"user": "sarah.lim@mekongfrontier.example", "q": "power purchase agreement of the Ea Sup solar plant", "expect": "Hợp đồng mua bán điện đmt ea súp", "note": "tiếng Anh"},
+    {"user": "cuong.le@dongduong-group.example", "q": "điều khoản hợp tác dành cho nhà đầu tư chiến lược", "expect": "Điều khoản hợp tác nhà đầu tư chiến lược"},
+    {"user": "cuong.le@dongduong-group.example", "q": "hợp đồng bảo hiểm rủi ro tài sản và gián đoạn kinh doanh", "expect": "Hợp đồng bảo hiểm mọi rủi ro tài sản"},
+    {"user": "lan.vu@saomai-energy.example", "q": "quy chế công bố thông tin", "expect": "Quy chế công bố thông tin"},
+    {"user": "lan.vu@saomai-energy.example", "q": "hồ sơ tranh chấp với nhà thầu EPC ở Ea Súp", "expect": "Báo cáo tranh chấp nhà thầu EPC Ea Súp"},
+    {"user": "sarah.lim@mekongfrontier.example", "q": "phụ lục thỏa thuận riêng với quỹ Hồng Hà", "must_not": ["sp-unique-1"], "note": "thư mục riêng của nhà đầu tư Nhóm A"},
+    {"user": "an.nguyen@hongha-fund.example", "q": "ghi nhớ tỷ giá và thanh toán nhóm B", "must_not": ["doc-0125"], "note": "tài liệu Nhóm B"},
+    {"user": "an.nguyen@hongha-fund.example", "q": "quy chế công bố thông tin nội bộ", "must_not": ["doc-0075"], "note": "tài liệu nội bộ"},
+    {"user": "cuong.le@dongduong-group.example", "q": "danh sách quỹ ngoại tham gia dựng sổ", "must_not": ["sp-link-c"], "note": "link chia sẻ nhầm, RAC chặn"}
+  ]
+}
