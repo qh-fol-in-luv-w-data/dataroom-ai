@@ -50,10 +50,12 @@ const ICONS = {
 };
 const icon = (n, cls = "") => `<svg class="i ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[n] || ""}</svg>`;
 const COLORS = ["#0e6b5c", "#3b5bdb", "#c4501b", "#6941c6", "#107c41", "#b42318", "#0e9384", "#2e5aac", "#9e3a8c", "#475467"];
+// Brand mark (shield with a spark): one inline SVG, used on the login page and in the sidebar.
+const LOGO_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M12 8l1 2.6 2.6 1-2.6 1L12 15l-1-2.4-2.6-1 2.6-1z"/></svg>';
 const avatar = (name, size = 32) => {
   const ini = String(name || "?").trim().split(/\s+/).slice(-2).map((w) => w[0]).join("").toUpperCase();
   let h = 0; for (const ch of String(name)) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
-  return `<span class="avatar" style="width:${size}px;height:${size}px;background:${COLORS[h % COLORS.length]}">${esc(ini)}</span>`;
+  return `<span class="avatar" aria-hidden="true" style="width:${size}px;height:${size}px;background:${COLORS[h % COLORS.length]}">${esc(ini)}</span>`;
 };
 const ftype = (ext) => `<span class="ftype ${esc(ext)}">${esc(ext)}</span>`;
 const GROUP_LABEL = { "DR-INV-A": "Nhóm A", "DR-INV-B": "Nhóm B", "DR-INV-C": "Nhóm C", ADVISERS: "Cố vấn", STAFF: "Nhân viên", REVIEWERS: "Người duyệt" };
@@ -66,9 +68,29 @@ const STATUS = {
 
 function toast(msg, kind = "") {
   const t = document.createElement("div");
-  t.className = "toast " + kind; t.textContent = msg;
+  t.className = "toast " + kind; t.setAttribute("role", kind === "bad" ? "alert" : "status");
+  t.innerHTML = icon(kind === "bad" ? "info" : "check") + "<span></span>"; t.lastChild.textContent = msg;
+  const gone = () => t.remove();
+  t.onclick = gone;
   $("#toasts").appendChild(t);
-  setTimeout(() => t.remove(), kind === "bad" ? 6000 : 4000);
+  setTimeout(gone, kind === "bad" ? 6000 : 4000);
+}
+
+// Keyboard + focus handling shared by modal() and drawer(): Esc closes, Tab stays inside, focus returns.
+const FOCUSABLE = 'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),summary,[tabindex]:not([tabindex="-1"])';
+function trapFocus(root, close) {
+  const back = document.activeElement;
+  const onKey = (e) => {
+    if (e.key === "Escape") { e.stopPropagation(); close(); return; }
+    if (e.key !== "Tab") return;
+    const f = $$(FOCUSABLE, root).filter((x) => x.offsetParent !== null);
+    if (!f.length) { e.preventDefault(); return; }
+    const first = f[0], last = f[f.length - 1];
+    if (e.shiftKey && (document.activeElement === first || !root.contains(document.activeElement))) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && (document.activeElement === last || !root.contains(document.activeElement))) { e.preventDefault(); first.focus(); }
+  };
+  document.addEventListener("keydown", onKey, true);
+  return () => { document.removeEventListener("keydown", onKey, true); if (back && back.isConnected) back.focus?.(); };
 }
 
 function modal({ title, body, actions = [], wide = false }) {
@@ -78,24 +100,29 @@ function modal({ title, body, actions = [], wide = false }) {
     <div class="card-h"><h3>${esc(title)}</h3><span style="flex:1"></span><button class="btn icon ghost" data-close aria-label="Đóng">${icon("x")}</button></div>
     <div class="card-b">${body}</div>
     ${actions.length ? `<div class="modal-f">${actions.map((a, i) => `<button class="btn ${a.primary ? "primary" : ""}" data-act="${i}">${esc(a.label)}</button>`).join("")}</div>` : ""}</div>`;
-  const close = () => ov.remove();
-  ov.addEventListener("click", (e) => { if (e.target === ov || e.target.closest("[data-close]")) close(); });
-  document.addEventListener("keydown", function k(e) { if (e.key === "Escape") { close(); document.removeEventListener("keydown", k); } });
+  let release = () => {};
+  const close = () => { release(); ov.remove(); };
+  ov.addEventListener("mousedown", (e) => { if (e.target === ov) close(); });
+  ov.addEventListener("click", (e) => { if (e.target.closest("[data-close]")) close(); });
   actions.forEach((a, i) => ov.querySelector(`[data-act="${i}"]`).onclick = async () => { if ((await a.onClick?.(ov)) !== false) close(); });
   document.body.appendChild(ov);
+  release = trapFocus(ov.firstElementChild, close);
   ov.querySelector("input,select,textarea,button:not([data-close])")?.focus();
   return ov;
 }
 
 function drawer(title, html) {
   $(".drawer")?.remove(); $(".drawer-ov")?.remove();
-  const ov = document.createElement("div"); ov.className = "overlay drawer-ov"; ov.style.background = "rgba(16,24,40,.25)";
-  const d = document.createElement("aside"); d.className = "drawer"; d.setAttribute("role", "dialog");
+  const ov = document.createElement("div"); ov.className = "overlay drawer-ov"; ov.style.background = "var(--overlay-soft)";
+  const d = document.createElement("aside"); d.className = "drawer"; d.setAttribute("role", "dialog"); d.setAttribute("aria-modal", "true"); d.setAttribute("aria-label", title);
   d.innerHTML = `<div class="card-h"><h3>${esc(title)}</h3><span style="flex:1"></span><button class="btn icon ghost" aria-label="Đóng">${icon("x")}</button></div><div class="card-b"></div>`;
-  const close = () => { d.remove(); ov.remove(); };
+  let release = () => {};
+  const close = () => { release(); d.remove(); ov.remove(); };
   ov.onclick = close; d.querySelector(".card-h button").onclick = close;
   document.body.append(ov, d);
+  release = trapFocus(d, close);
   d.querySelector(".card-b").innerHTML = html;
+  d.querySelector(".card-h button").focus();
   return d.querySelector(".card-b");
 }
 
@@ -204,10 +231,10 @@ async function renderLogin(message) {
   $("#app").innerHTML = `
   <div class="login">
     <section class="login-art" aria-hidden="true">
-      <div class="login-logo"><span class="logo-mark">SM</span> Data Room AI</div>
+      <div class="login-logo"><span class="logo-mark">${LOGO_SVG}</span> Data Room AI</div>
       <div>
         <h1>Trợ lý AI cho Data Room IPO, đúng quyền của từng nhà đầu tư.</h1>
-        <p class="lead">CTCP Năng lượng Sao Mai · đợt chào bán lần đầu 2026</p>
+        <p class="lead">CT Group · Data Room phục vụ thẩm định đợt chào bán lần đầu</p>
         <div class="login-points">
           <div>${icon("shield")}<span><b>4 cổng phân quyền</b>RLS, hỏi lại SharePoint, tập thu hồi, kiểm danh tính — sai ở đâu cũng đóng an toàn.</span></div>
           <div>${icon("spark")}<span><b>Trả lời có trích dẫn nguyên văn</b>Mọi ý được kiểm chứng với tài liệu gốc trước khi hiển thị.</span></div>
@@ -216,32 +243,36 @@ async function renderLogin(message) {
       </div>
       <div class="login-foot">Bản demo · dữ liệu giả lập · không dùng cho giao dịch thật</div>
     </section>
-    <section class="login-panel">
+    <main class="login-panel" id="main-login">
       <div class="login-card">
+        <div class="login-brand-m"><span class="logo-mark">${LOGO_SVG}</span> Data Room AI</div>
         <h2>Đăng nhập</h2>
         <div class="muted">Dùng tài khoản được mời vào Data Room (Entra ID giả lập).</div>
         <form id="login-form" novalidate>
           ${message ? `<div class="alert info">${esc(message)}</div>` : ""}
           <div class="alert bad hidden" id="login-err" role="alert"></div>
-          <label class="field">Email<input class="input" id="email" type="email" autocomplete="username" required placeholder="ten@congty.com"></label>
+          <label class="field">Email<input class="input" id="email" type="email" autocomplete="username" required placeholder="ten@congty.com" aria-describedby="login-err"></label>
           <label class="field">Mật khẩu
-            <span class="pw-wrap"><input class="input" id="password" type="password" autocomplete="current-password" required>
-            <button type="button" class="btn ghost sm" id="pw-toggle" aria-label="Hiện mật khẩu">${icon("eye")}</button></span></label>
+            <span class="pw-wrap"><input class="input" id="password" type="password" autocomplete="current-password" required aria-describedby="login-err">
+            <button type="button" class="btn ghost sm" id="pw-toggle" aria-label="Hiện mật khẩu" aria-pressed="false">${icon("eye")}</button></span></label>
           <button class="btn primary" id="login-btn" type="submit" style="height:40px">Đăng nhập</button>
         </form>
         <details class="demo-acc">
           <summary>Tài khoản demo</summary>
-          <p class="small muted" style="margin:8px 0 0">Bấm để điền email. Mật khẩu demo nằm trong file <span class="mono">data/tenant/DEMO_ACCOUNTS.md</span>.</p>
+          <p class="small muted" style="margin:8px 0 0">Chọn một tài khoản để điền sẵn email. Mật khẩu demo nằm trong file <span class="mono">data/tenant/DEMO_ACCOUNTS.md</span>.</p>
           <div class="demo-list" id="demo-list"><div class="muted small">Đang tải…</div></div>
         </details>
       </div>
-    </section>
+    </main>
   </div>`;
-  $("#pw-toggle").onclick = () => { const p = $("#password"); p.type = p.type === "password" ? "text" : "password"; };
+  $("#pw-toggle").onclick = () => {
+    const p = $("#password"), show = p.type === "password"; p.type = show ? "text" : "password";
+    $("#pw-toggle").setAttribute("aria-pressed", String(show)); $("#pw-toggle").setAttribute("aria-label", show ? "Ẩn mật khẩu" : "Hiện mật khẩu");
+  };
   $("#login-form").onsubmit = async (e) => {
     e.preventDefault();
     const btn = $("#login-btn"), err = $("#login-err");
-    err.classList.add("hidden"); btn.disabled = true; btn.textContent = "Đang đăng nhập…";
+    err.classList.add("hidden"); btn.disabled = true; btn.innerHTML = '<span class="spinner" aria-hidden="true"></span> Đang đăng nhập…';
     try {
       const r = await post("/api/auth/login", { email: $("#email").value, password: $("#password").value });
       TOKEN = r.token; store.set("dr-token", TOKEN);
@@ -264,19 +295,21 @@ function renderLoginMicrosoft(message) {
   $("#app").innerHTML = `
   <div class="login">
     <section class="login-art" aria-hidden="true">
-      <div class="login-logo"><span class="logo-mark">SM</span> Data Room AI</div>
+      <div class="login-logo"><span class="logo-mark">${LOGO_SVG}</span> Data Room AI</div>
       <div><h1>Trợ lý AI cho Data Room IPO, đúng quyền của từng nhà đầu tư.</h1>
         <p class="lead">Đăng nhập bằng tài khoản được mời vào Data Room trên SharePoint.</p></div>
       <div class="login-foot">Quyền truy cập do SharePoint và Entra ID quyết định</div>
     </section>
-    <section class="login-panel"><div class="login-card">
+    <main class="login-panel" id="main-login"><div class="login-card">
+      <div class="login-brand-m"><span class="logo-mark">${LOGO_SVG}</span> Data Room AI</div>
       <h2>Đăng nhập</h2>
       <div class="muted">Dùng tài khoản Microsoft (Entra ID) mà Ban IPO đã mời. Có thể được yêu cầu xác thực đa yếu tố.</div>
       ${message ? `<div class="alert info" style="margin-top:16px">${esc(message)}</div>` : ""}
       <button class="btn primary" id="ms-login" style="height:42px;width:100%;margin-top:20px">${icon("lock")} Đăng nhập bằng tài khoản Microsoft</button>
-    </div></section>
+    </div></main>
   </div>`;
   $("#ms-login").onclick = () => MSAL.loginRedirect({ scopes: [AUTH.scope] });
+  $("#ms-login").focus();
 }
 
 // ------------------------------------------------------------------ shell + router
@@ -336,19 +369,46 @@ function openConversation(id) {
 }
 function updateRecent() {
   const el = $("#sb-recent"); if (!el) return;
-  el.innerHTML = CONVS.length ? CONVS.map((c) => `<button data-c="${c.id}" class="${c.id === CUR ? "active" : ""}" title="${esc(c.title)}">
+  el.innerHTML = CONVS.length ? CONVS.map((c) => `<button data-c="${c.id}" class="${c.id === CUR ? "active" : ""}" title="${esc(c.title)}"${c.id === CUR ? ' aria-current="true"' : ""}>
       <span>${esc(c.title)}</span></button>`).join("")
     : '<div class="sb-empty">Các cuộc trò chuyện trong phiên này sẽ hiện ở đây</div>';
   $$("button", el).forEach((b) => b.onclick = () => openConversation(b.dataset.c));
 }
 
+// Sidebar state: desktop = collapsible column, <= 900px = off-canvas drawer (class "open" + scrim).
+// A closed sidebar is made inert so Tab never walks into hidden links.
+const MOBILE_MQ = window.matchMedia("(max-width: 900px)");
+let SHELL_KEYS = false;
+function syncSidebar() {
+  const sb = $("#sidebar"), sh = $("#shell"); if (!sb || !sh) return;
+  const open = MOBILE_MQ.matches ? sb.classList.contains("open") : !sh.classList.contains("sb-collapsed");
+  sb.inert = !open; sb.setAttribute("aria-hidden", String(!open));
+  $("#menu")?.setAttribute("aria-expanded", String(MOBILE_MQ.matches && open));
+  $("#sb-open")?.setAttribute("aria-expanded", String(open));
+  $("#sb-toggle")?.setAttribute("aria-expanded", String(open));
+}
+function closeSidebarDrawer(refocus) {
+  const sb = $("#sidebar"); if (!sb || !sb.classList.contains("open")) return;
+  sb.classList.remove("open"); syncSidebar(); if (refocus) $("#menu")?.focus();
+}
+function setTheme(t) {
+  document.documentElement.dataset.theme = t; store.set("dr-theme", t);
+  const b = $("#theme"); if (!b) return;
+  b.innerHTML = icon(t === "dark" ? "sun" : "moon"); b.setAttribute("aria-pressed", String(t === "dark"));
+  const label = t === "dark" ? "Chuyển sang giao diện sáng" : "Chuyển sang giao diện tối";
+  b.title = label; b.setAttribute("aria-label", label);
+  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", t === "dark" ? "#1d1d1b" : "#faf9f5");
+}
+
 function renderShell() {
+  const dark = document.documentElement.dataset.theme === "dark";
   $("#app").innerHTML = `
+  <a class="skip-link" href="#page">Bỏ qua đến nội dung chính</a>
   <div class="shell ${store.get("dr-sb") === "0" ? "sb-collapsed" : ""}" id="shell">
-    <aside class="sidebar" id="sidebar">
-      <div class="sb-brand"><span class="sb-logo">SM</span><div><b>Data Room AI</b><small>Sao Mai · IPO 2026</small></div>
-        <button class="btn icon ghost sb-toggle" id="sb-toggle" title="Thu gọn thanh bên" aria-label="Thu gọn thanh bên">${icon("panel")}</button></div>
-      ${isAdmin() ? "" : `<button class="sb-new" id="new-chat">${icon("edit")}<span>Cuộc trò chuyện mới</span></button>`}
+    <aside class="sidebar" id="sidebar" aria-label="Thanh bên">
+      <div class="sb-brand"><span class="sb-logo">${LOGO_SVG}</span><div><b>Data Room AI</b><small>CT Group · IPO</small></div>
+        <button class="btn icon ghost sb-toggle" id="sb-toggle" title="Thu gọn thanh bên (Ctrl+B)" aria-label="Thu gọn thanh bên" aria-controls="sidebar" aria-expanded="true">${icon("panel")}</button></div>
+      ${isAdmin() ? "" : `<button class="sb-new" id="new-chat" title="Cuộc trò chuyện mới (Ctrl+Shift+O)">${icon("edit")}<span>Cuộc trò chuyện mới</span></button>`}
       <nav class="sb-nav" aria-label="Điều hướng">${NAV.map((s) => {
         const items = s.items.filter(visibleNav);
         return items.length ? `<div class="sb-sec">${s.sec}</div>` + items.map((i) =>
@@ -356,36 +416,52 @@ function renderShell() {
       }).join("")}
         ${isAdmin() ? "" : '<div class="sb-sec">Gần đây</div><div class="sb-recent" id="sb-recent"></div>'}</nav>
       <div class="sb-user">${avatar(ME.name, 32)}<div class="who"><b>${esc(ME.name)}</b><small>${esc(roleLabel())}</small></div>
-        <button class="btn icon ghost" id="theme" title="Đổi giao diện sáng/tối" aria-label="Đổi giao diện sáng/tối">${icon(document.documentElement.dataset.theme === "dark" ? "sun" : "moon")}</button>
+        <button class="btn icon ghost" id="theme" aria-pressed="${dark}"></button>
         <button class="btn icon ghost" id="logout" title="Đăng xuất" aria-label="Đăng xuất">${icon("logout")}</button></div>
     </aside>
+    <div class="sb-scrim" id="sb-scrim"></div>
     <div class="main">
       <header class="topbar" id="topbar">
-        <button class="btn icon ghost menu-btn" id="menu" aria-label="Mở menu">${icon("menu")}</button>
-        <button class="btn icon ghost sb-open" id="sb-open" title="Mở thanh bên" aria-label="Mở thanh bên">${icon("panel")}</button>
+        <button class="btn icon ghost menu-btn" id="menu" aria-label="Mở menu" aria-controls="sidebar" aria-expanded="false">${icon("menu")}</button>
+        <button class="btn icon ghost sb-open" id="sb-open" title="Mở thanh bên (Ctrl+B)" aria-label="Mở thanh bên" aria-controls="sidebar">${icon("panel")}</button>
         <div class="tb-title"><h1 id="page-title"></h1><div class="sub" id="page-sub"></div></div>
         <span class="spacer"></span>
-        <div class="pills" id="pills"></div>
+        <div class="pills" id="pills" role="status" aria-label="Trạng thái hệ thống"></div>
       </header>
-      <main id="page"></main>
+      <main id="page" tabindex="-1"></main>
     </div>
     <aside class="panel" id="panel" aria-label="Nguồn và kiểm chứng"></aside>
   </div>`;
   $("#logout").onclick = () => logout();
   const nc = $("#new-chat"); if (nc) nc.onclick = newConversation;
   updateRecent();
-  $("#menu").onclick = () => $("#sidebar").classList.toggle("open");
-  const toggle = () => { const c = $("#shell").classList.toggle("sb-collapsed"); store.set("dr-sb", c ? "0" : "1"); };
-  $("#sb-toggle").onclick = toggle; $("#sb-open").onclick = toggle;
-  $("#theme").onclick = () => {
-    const t = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
-    document.documentElement.dataset.theme = t; store.set("dr-theme", t);
-    $("#theme").innerHTML = icon(t === "dark" ? "sun" : "moon");
+  setTheme(dark ? "dark" : "light");
+  const sb = $("#sidebar");
+  $("#menu").onclick = () => { sb.classList.toggle("open"); syncSidebar(); if (sb.classList.contains("open")) ($("a.active", sb) || $("a,button", sb))?.focus(); };
+  $("#sb-scrim").onclick = () => closeSidebarDrawer(true);
+  const toggle = () => {
+    const c = $("#shell").classList.toggle("sb-collapsed"); store.set("dr-sb", c ? "0" : "1"); syncSidebar();
+    (c ? $("#sb-open") : $("#sb-toggle"))?.focus();
   };
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") closePanel();
-    if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "o" && !isAdmin()) { e.preventDefault(); newConversation(); }
-  });
+  $("#sb-toggle").onclick = toggle; $("#sb-open").onclick = toggle;
+  $("#theme").onclick = () => setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
+  // any code that adds/removes "open" (e.g. picking a conversation) keeps inert/aria in step
+  new MutationObserver(syncSidebar).observe(sb, { attributes: true, attributeFilter: ["class"] });
+  MOBILE_MQ.addEventListener?.("change", syncSidebar);
+  syncSidebar();
+  if (!SHELL_KEYS) {
+    SHELL_KEYS = true;
+    document.addEventListener("keydown", (e) => {
+      if (!ME || !$("#shell")) return;
+      if (e.key === "Escape") {
+        if ($(".overlay")) return;            // an open modal/drawer handles its own Esc
+        if ($("#sidebar").classList.contains("open")) { closeSidebarDrawer(true); return; }
+        closePanel();
+      }
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "o" && !isAdmin()) { e.preventDefault(); newConversation(); }
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "b" && !MOBILE_MQ.matches) { e.preventDefault(); $("#shell").classList.contains("sb-collapsed") ? $("#sb-open").click() : $("#sb-toggle").click(); }
+    });
+  }
 }
 
 function route() {
@@ -396,13 +472,13 @@ function route() {
   const allowed = isAdmin() ? navIds : ["chat", ...navIds];
   if (!allowed.includes(id)) { id = def; history.replaceState(null, "", "#/" + id); }
   else if (!location.hash) history.replaceState(null, "", "#/" + id);   // an answer is drawn only on #/chat
-  $$(".sb-nav a").forEach((a) => a.classList.toggle("active", a.dataset.id === id));
-  $("#sidebar").classList.remove("open");
+  $$(".sb-nav a").forEach((a) => { const on = a.dataset.id === id; a.classList.toggle("active", on); if (on) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current"); });
+  closeSidebarDrawer();
   closePanel();
   const [t, sub] = TITLES[id];
   $("#page-title").textContent = id === "chat" ? chatTitle() : t; $("#page-sub").textContent = sub;
   $("#topbar").classList.toggle("chat-top", id === "chat");
-  document.title = `${t} · Data Room AI`;
+  document.title = `${id === "chat" ? chatTitle() : t} · Data Room AI`;
   const page = $("#page");
   page.className = id === "chat" ? "" : "page";
   ({ chat: pageChat, search: pageSearch, drafts: pageDrafts, review: pageReview, scope: pageScope, perms: pagePerms, matrix: pageMatrix, scenarios: pageScenarios, audit: pageAudit, system: pageSystem })[id](page);
@@ -421,7 +497,7 @@ async function pollStatus() {
   if (!TOKEN || !ME || !isAdmin()) return;
   try { STATUS_CACHE = await api("/api/status"); } catch { return; }
   const s = STATUS_CACHE, age = (k) => s.feeds[k] ?? 1e9;
-  const p = (txt, cls, title = "") => `<span class="chip ${cls}" title="${esc(title)}">${txt}</span>`;
+  const p = (txt, cls, title = "") => `<span class="chip ${cls}" title="${esc(title)}"><i class="dot" aria-hidden="true"></i>${txt}</span>`;
   const el = $("#pills");
   if (el) el.innerHTML = [
     p(`Entra ${age("entra") > 1e8 ? "—" : Math.round(age("entra")) + "s"}`, age("entra") > s.feed_max_age ? "bad" : "ok", "Độ tươi nguồn Entra"),
