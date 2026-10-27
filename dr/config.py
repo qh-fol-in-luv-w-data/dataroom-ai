@@ -76,12 +76,14 @@ class Settings:
     # OCR: PaddleOCR-VL-1.6 served by mlx-vlm on the Apple GPU; PP-OCRv5 latin as fallback.
     ocr_server_url: str = _env("DR_OCR_SERVER", "http://127.0.0.1:8111/")
     ocr_vl_model: str = _env("DR_OCR_VL_MODEL", str(Path.home() / ".paddlex/official_models/PaddleOCR-VL-1.6"))
-    ocr_engine: str = _env("DR_OCR_ENGINE", "vl")  # vl (PaddleOCR-VL) | vintern (Vintern-1B-v3.5) | ppocr
+    ocr_engine: str = _env("DR_OCR_ENGINE", "vl")  # vl (PaddleOCR-VL-1.6) | ppocr (PP-OCRv5 latin, CPU only)
     # Bulk-load speed: the second reader (PP-OCRv5 on every line, CPU) only marks numbers "chưa chắc";
     # off = ~half the CPU time per page. Pages/images with fewer text boxes than this skip the VLM reader.
     ocr_cross_check: bool = _env("DR_OCR_CROSSCHECK", "1") == "1"
     ocr_min_text_boxes: int = int(_env("DR_OCR_MIN_TEXT_BOXES", "3"))
     ocr_max_pages: int = int(_env("DR_OCR_MAX_PAGES", "40"))  # per document, keeps big scanned prospectuses bounded
+    # Markdown from OCR run on another machine (inference_ocr): a scan/image with a .md there is read from it
+    ocr_md_dir: str = _env("DR_OCR_MD_DIR", "")
 
     @property
     def tenant_dir(self) -> Path:

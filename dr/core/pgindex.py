@@ -16,9 +16,11 @@ from __future__ import annotations
 
 import time
 from collections import defaultdict
+from datetime import date
 
 import numpy as np
 
+from dr.core.conflicts import doc_date
 from dr.core.index import tokens
 from dr.db import pg
 
@@ -75,7 +77,14 @@ class PgSearchIndex:
     # ------------------------------------------------------------------ search
     def search_as(self, oid: str, query: str, qvec=None, k: int = 40, site: str | None = None,
                   rrf_k: int = 60) -> tuple[list[tuple[int, float]], dict]:
+        """Top k chunks the principal may read (RLS in the query), BM25 and vector fused by RRF. Copies and
+        versions of the same text count once (a file copied into several folders: 45% of the CT Group chunks;
+        179 file names in several dated versions): 3k candidates are fused, grouped (near_duplicate_groups),
+        and each group gives one slot to its newest dated file, so the k slots hold k different texts. The
+        other members are returned in info["versions"] (representative -> others): conflicts.py compares their
+        numbers. Grouping runs after RLS, on what this user may read, so permissions are not involved."""
         info: dict = {}
+        want, k = k, k * 3
         where, args = self._scope_sql(site)
         with pg.as_principal(oid) as cur:
             n_chunks = cur.execute(f"SELECT COALESCE(sum(i.chunk_count), 0) FROM items i WHERE {where}",
@@ -96,11 +105,27 @@ class PgSearchIndex:
                 ranked.append(self._vector(cur, qvec, k, items, site))
                 info["vector_ms"] = round((time.perf_counter() - t0) * 1000, 1)
 
-        fused: dict[int, float] = {}
-        for lst in ranked:
-            for rank, cid in enumerate(lst):
-                fused[cid] = fused.get(cid, 0.0) + 1.0 / (rrf_k + rank + 1)
-        return sorted(fused.items(), key=lambda x: -x[1])[:k], info
+            fused: dict[int, float] = {}
+            for lst in ranked:
+                for rank, cid in enumerate(lst):
+                    fused[cid] = fused.get(cid, 0.0) + 1.0 / (rrf_k + rank + 1)
+            order = sorted(fused.items(), key=lambda x: -x[1])
+            meta = {r[0]: (r[1], r[2]) for r in cur.execute(
+                "SELECT c.chunk_id, c.text_folded, i.name FROM chunks c JOIN items i ON i.item_id = c.item_id "
+                "WHERE c.chunk_id = ANY(%s)", ([c for c, _ in order],)).fetchall()} if order else {}
+        groups = near_duplicate_groups([(c, meta.get(c, ("", ""))[0]) for c, _ in order])
+        score = dict(order)
+        out, versions = [], {}
+        for group in groups:
+            # one representative per group of copies / versions: the newest dated file, else the best ranked
+            rep = max(group, key=lambda c: (doc_date(meta.get(c, ("", ""))[1]) or date.min, score[c]))
+            out.append((rep, max(score[c] for c in group)))
+            if len(group) > 1:
+                versions[rep] = [c for c in group if c != rep]
+        out.sort(key=lambda x: -x[1])
+        info["copies_dropped"] = len(order) - len(out)
+        info["versions"] = {c: v for c, v in versions.items() if c in {x for x, _ in out[:want]}}
+        return out[:want], info
 
     @staticmethod
     def _filters(items, site) -> tuple[str, list]:
@@ -161,6 +186,33 @@ class PgSearchIndex:
                 GROUP BY cand.chunk_id ORDER BY score DESC LIMIT %s""",
             (tsq, CAND_CAP, *fargs, SCORE_CAP, terms, k)).fetchall()
         return [r[0] for r in rows]
+
+
+NEAR_DUP = 0.8          # word-trigram Jaccard at or above which two chunks are copies / versions of one text
+
+
+def _shingles(folded: str) -> set:
+    w = folded.split()
+    return {" ".join(w[i:i + 3]) for i in range(max(1, len(w) - 2))}
+
+
+def near_duplicate_groups(ranked: list[tuple[int, str]], threshold: float = NEAR_DUP) -> list[list[int]]:
+    """Group chunks (in rank order, with their folded text) whose word-trigram sets overlap at `threshold`
+    (Jaccard): exact copies and versions differing in a few words or numbers (two B4 floor plans, a re-OCR of
+    the same poster). A few hundred candidates: compared directly, no MinHash index needed at this size."""
+    groups: list[list[int]] = []
+    reps: list[set] = []
+    for cid, text in ranked:
+        sh = _shingles(text or "")
+        for g, rs in zip(groups, reps):
+            inter = len(sh & rs)
+            if inter and inter / len(sh | rs) >= threshold:
+                g.append(cid)
+                break
+        else:
+            groups.append([cid])
+            reps.append(sh)
+    return groups
 
 
 def make_index():

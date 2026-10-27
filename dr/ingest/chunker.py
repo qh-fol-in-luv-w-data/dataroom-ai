@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 
 from unidecode import unidecode
 
+from dr.ingest import ocr_accents
+from dr.ingest.clean import clean_text, drop_repeated_lines, join_label_lines, table_records
 from dr.ingest.parsers import Block
 
 INJECTION_PATTERNS = [
@@ -69,9 +71,35 @@ def _split(text: str, max_chars: int) -> list[str]:
     return parts
 
 
+def _clean(blocks: list[Block]) -> list[Block]:
+    """clean.py on every block; OCR tables as records; a page header / footer kept on its first page only."""
+    cleaned = []
+    for b in blocks:
+        t = clean_text(b.text)
+        if b.ocr:
+            t = ocr_accents.fix(t)
+            t = table_records(t) if b.kind == "table" else join_label_lines(t)
+        cleaned.append(Block(t, b.locator, b.kind, b.ocr, b.meta))
+    pages: dict[str, list[str]] = {}
+    for b in cleaned:
+        if b.locator.startswith("Trang "):
+            pages.setdefault(b.locator, []).extend(b.text.split("\n"))
+    repeated = drop_repeated_lines(pages)
+    if not repeated:
+        return cleaned
+    first: dict[str, str] = {}                    # repeated line -> the page it is kept on
+    out = []
+    for b in cleaned:
+        lines = [ln for ln in b.text.split("\n")
+                 if ln.strip() not in repeated or first.setdefault(ln.strip(), b.locator) == b.locator]
+        out.append(Block("\n".join(lines), b.locator, b.kind, b.ocr, b.meta))
+    return out
+
+
 def chunk(blocks: list[Block], max_chars: int = 800) -> list[Chunk]:
     out: list[Chunk] = []
     buf: list[Block] = []
+    blocks = _clean(blocks)
 
     def flush():
         if not buf:

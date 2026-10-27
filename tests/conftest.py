@@ -19,6 +19,16 @@ def _cluster():
     yield
 
 
+@pytest.fixture(autouse=True)
+def _ocr_accents_without_db():
+    """OCR tone-mark correction learns from the database's typed chunks; tests that do not set up a room
+    start it with nothing learned (no correction) instead of reaching for a database."""
+    from dr.ingest import ocr_accents
+    ocr_accents.learn([])
+    yield
+    ocr_accents.reset()
+
+
 @pytest.fixture()
 def db(_cluster):
     pg.reset_all()

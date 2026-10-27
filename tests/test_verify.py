@@ -75,3 +75,20 @@ def test_numbers_from_question_are_context():
 def test_fuzzy_only_for_ocr():
     assert quote_found("Tỷ giá trần bảo hiểm là 25.850 VND/USD theo thoả thuận", P[11]["text"], fuzzy=True)
     assert not quote_found("Doanh thu năm 2025 dat 1.250,5 tỷ đồng", P[10]["text"], fuzzy=False)
+
+
+def test_number_must_match_in_digits_and_value():
+    passages = {1: {"chunk_id": 1, "text": "CHIẾN BINH CYBER SALE 4.0\nThu nhập 50tr mỗi tháng"}}
+    invented = {"text": "Thu nhập lên đến 4.000 USD/tháng.",
+                "citations": [{"doc": "D1", "quote": "CHIẾN BINH CYBER SALE 4.0"}]}
+    kept, dropped = check([invented], {"D1": 1}, passages, "Cyber Sale 4.0 hứa thu nhập bao nhiêu?")
+    assert not kept and "con số" in dropped[0][1]
+    right = {"text": "Thu nhập 50tr mỗi tháng.", "citations": [{"doc": "D1", "quote": "Thu nhập 50tr mỗi tháng"}]}
+    assert check([right], {"D1": 1}, passages, "")[0]
+
+
+def test_same_number_other_separators_still_matches():
+    passages = {1: {"chunk_id": 1, "text": "Diện tích thông thủy: 52,55 m²; giá 5.433.003.576 đồng"}}
+    claim = {"text": "Diện tích 52,55 m², giá 5.433.003.576 đồng.",
+             "citations": [{"doc": "D1", "quote": "Diện tích thông thủy: 52,55 m²; giá 5.433.003.576 đồng"}]}
+    assert check([claim], {"D1": 1}, passages, "")[0]

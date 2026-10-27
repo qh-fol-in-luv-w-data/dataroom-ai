@@ -7,6 +7,7 @@ Gate 4  principal gate (role, deny list, feed freshness) -> principal_gate()
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from dr.config import settings
@@ -53,17 +54,34 @@ def allowed_chunks(oid: str, site: str | None = None) -> dict[int, str]:
     return {r[0]: r[1] for r in rows}
 
 
+_GENERIC = re.compile(r"KINH DOANH|MARKETING|TRUY[ỀE]N TH[ÔO]NG|D[ỮU] LI[ỆE]U|L[ƯU]U TR[ỮU]|H[ỒO] S[ƠO]|^OTHER$|^PDF$|"
+                      r"^5PS$|PROMOT|PRODUCT|SALES KIT|^D[ỰU] [ÁA]N$|^T[ỔO]NG QUAN$|INFO (IN|OUT)", re.I)
+
+
+def doc_context(path: str, name: str) -> str:
+    """Where a file sits, for the reranker and the LLM: 'company › project › folder › file'. Many files are
+    named 'Artboard 9.png' or 'HGh5X0.jpg'; the folders say which company and project they belong to. The
+    data-room category (01. … 07.) and generic folder names (marketing, archive, PDF…) are left out."""
+    segs = [re.sub(r"^\d+(\.\d+)*\.?\s*", "", s).strip() for s in path.strip("/").split("/")[2:]]
+    keep = [s for s in segs if len(s) > 2 and not _GENERIC.search(s) and s.lower() != "new folder"]
+    keep = list(dict.fromkeys(keep))
+    if len(keep) > 3:
+        keep = [keep[0], keep[1], keep[-1]]           # company, the folder under it (the project), the file's folder
+    return " › ".join([*(s[:45] for s in keep), name])
+
+
 def fetch_passages(oid: str, chunk_ids: list[int]) -> dict[int, dict]:
     if not chunk_ids:
         return {}
     with pg.as_principal(oid) as cur:
         rows = cur.execute(
             "SELECT c.chunk_id, c.item_id, c.text, c.locator, c.ocr, c.injection_flag, c.kind, i.name, i.ctag, "
-            "i.site_id, i.ext, c.ocr_doubt, c.ocr_page FROM chunks c JOIN items i ON i.item_id = c.item_id "
+            "i.site_id, i.ext, c.ocr_doubt, c.ocr_page, i.path FROM chunks c JOIN items i ON i.item_id = c.item_id "
             "WHERE c.chunk_id = ANY(%s)", (chunk_ids,)).fetchall()
     return {r[0]: {"chunk_id": r[0], "item_id": r[1], "text": r[2], "locator": r[3], "ocr": r[4],
                    "injection_flag": r[5], "kind": r[6], "name": r[7], "ctag": r[8], "site_id": r[9], "ext": r[10],
-                   "ocr_doubt": r[11] or [], "ocr_page": r[12]}
+                   "ocr_doubt": r[11] or [], "ocr_page": r[12], "path": r[13] or "",
+                   "context": doc_context(r[13] or "", r[7])}
             for r in rows}
 
 

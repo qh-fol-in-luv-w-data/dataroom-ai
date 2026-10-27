@@ -282,3 +282,31 @@ CREATE TABLE IF NOT EXISTS review_drafts (
     decided_at  timestamptz
 );
 CREATE INDEX IF NOT EXISTS review_drafts_oid_idx ON review_drafts (oid);
+
+-- ---------------------------------------------------------------- fact index (dr/core/facts.py)
+-- Labelled fields read off the documents at ingest: an official letter's or a contract's number, date and
+-- subject, a plot's land-registry numbers, a company's tax code. A question asking for one of them is
+-- answered by looking it up, not by a small model reading a long OCR page. Each fact belongs to its chunk:
+-- it is visible exactly when the chunk is (same RLS), and goes with it.
+CREATE TABLE IF NOT EXISTS facts (
+    fact_id    bigserial PRIMARY KEY,
+    item_id    text   NOT NULL REFERENCES items(item_id) ON DELETE CASCADE,
+    chunk_id   bigint NOT NULL REFERENCES chunks(chunk_id) ON DELETE CASCADE,
+    kind       text   NOT NULL,                 -- doc | land | tax
+    number     text,                            -- doc: the document number; land: plot; tax: tax code
+    date       text,                            -- dd/mm/yyyy as written
+    subject    text,                            -- doc: 'V/v …'; land: map sheet; tax: company
+    party      text,                            -- doc: issuer / recipient
+    quotes     text[] NOT NULL,                 -- the source lines, verbatim (the answer cites them)
+    descriptor text   NOT NULL                  -- folded words the question is matched against
+);
+CREATE INDEX IF NOT EXISTS facts_kind_idx ON facts (kind);
+CREATE INDEX IF NOT EXISTS facts_item_idx ON facts (item_id);
+GRANT SELECT ON facts TO app_query;
+ALTER TABLE facts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE facts FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS facts_admin ON facts;
+CREATE POLICY facts_admin ON facts TO dr_admin USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS facts_readable ON facts;
+CREATE POLICY facts_readable ON facts FOR SELECT TO app_query
+    USING (EXISTS (SELECT 1 FROM chunks c WHERE c.chunk_id = facts.chunk_id));

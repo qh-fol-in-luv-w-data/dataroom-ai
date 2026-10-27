@@ -11,10 +11,12 @@ import zlib
 from concurrent.futures import ThreadPoolExecutor
 
 from dr.db import pg
-from dr.ingest import safety
+from dr.ingest import ocr_md, safety
+from dr.core import facts
+from dr.core.gates import doc_context
 from dr.core.pgindex import tsv_literal, vec_literal
 from dr.ingest.chunker import Chunk, chunk, fold
-from dr.ingest.parsers import SUPPORTED, Block, ParsedDoc, parse
+from dr.ingest.parsers import IMAGES, SUPPORTED, Block, ParsedDoc, parse
 from dr.models.embed import embed_texts
 from dr.tenant.service import FakeTenant
 
@@ -27,6 +29,8 @@ def _mark(item_id: str, status: str, reason: str | None = None, **extra) -> None
     with pg.admin() as c:
         c.execute(f"UPDATE items SET status=%s, reason=%s{', ' + sets if sets else ''}, updated_at=now() "
                   "WHERE item_id=%s", (status, reason, *extra.values(), item_id))
+        if status == "skipped":         # a file read again with nothing in it keeps no chunks of an earlier read
+            c.execute("DELETE FROM chunks WHERE item_id=%s", (item_id,))
         c.commit()
 
 
@@ -83,7 +87,10 @@ def ingest_item(tenant: FakeTenant, item_id: str) -> dict:
         _mark(item_id, "skipped", s.reason, encrypted=s.encrypted or encrypted, malware=s.malware or malware)
         return {"item_id": item_id, "status": "skipped", "reason": s.reason}
     try:
-        doc = _parse_with_attachments(data, ext, name)
+        md = ocr_md.find(tenant.items[item_id]["path"], name) if ext == "pdf" or ext in IMAGES else None
+        md_text = md.read_text(encoding="utf-8") if md else ""
+        doc = (ocr_md.parse(md_text, ext in IMAGES) if md and ocr_md.is_ocr(md_text)
+               else _parse_with_attachments(data, ext, name))
     except Exception as e:
         log.exception("parse failed for %s", item_id)
         _mark(item_id, "error", f"Lỗi đọc file: {e.__class__.__name__}: {e}"[:300])
@@ -92,7 +99,11 @@ def ingest_item(tenant: FakeTenant, item_id: str) -> dict:
     if not chunks:
         _mark(item_id, "skipped", "Không trích được nội dung")
         return {"item_id": item_id, "status": "skipped"}
-    vecs = embed_texts([f"{name}\n{ch.text}" for ch in chunks])
+    # contextual retrieval: where the file sits (company › project › folder › file) is embedded and indexed with
+    # every chunk, so a poster line "Thu nhập 50tr mỗi tháng" is found by "tuyển dụng Léman Parking Lot". The
+    # stored text stays the chunk alone (quotes are verified against it).
+    ctx = doc_context(tenant.items[item_id]["path"], name)
+    vecs = embed_texts([f"{ctx}\n{ch.text}" for ch in chunks])
 
     with pg.admin() as c:
         cur = c.execute("SELECT ctag, ai_use, encrypted, malware FROM items WHERE item_id=%s FOR UPDATE",
@@ -108,8 +119,10 @@ def ingest_item(tenant: FakeTenant, item_id: str) -> dict:
                 "injection_flag, ocr, converter, embedding, emb, tsv, tlen, ocr_doubt, ocr_page) "
                 "VALUES (%s,%s,%s,true,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::halfvec,%s::tsvector,%s,%s,%s)",
                 [(item_id, site, ctag, ch.ordinal, ch.locator, ch.kind, ch.text, fold(ch.text), ch.injection_flag,
-                  ch.ocr, doc.converter, vecs[i].tolist(), vec_literal(vecs[i]), *tsv_literal(ch.text),
+                  ch.ocr, doc.converter, vecs[i].tolist(), vec_literal(vecs[i]),
+                  *tsv_literal(f"{ctx}\n{ch.text}"),
                   ch.doubt or None, ch.page_key) for i, ch in enumerate(chunks)])
+        facts.index_item(c, item_id, ctx)      # labelled fields (numbers, dates, plots, tax codes) for lookup
         reason = "; ".join(doc.notes)[:500] or None
         c.execute("UPDATE items SET status='indexed', reason=%s, ingested_ctag=%s, chunk_count=%s, updated_at=now() "
                   "WHERE item_id=%s", (reason, ctag, len(chunks), item_id))

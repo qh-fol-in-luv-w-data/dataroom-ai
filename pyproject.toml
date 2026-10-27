@@ -4,7 +4,6 @@ version = "0.1.0"
 description = "Local demo of a permission-aware RAG core for an IPO data room (SharePoint/Entra simulated)"
 requires-python = ">=3.11,<3.12"
 dependencies = [
-  "timm>=1.0",            # Vintern-1B-v3.5 OCR (InternViT)
   "fastapi>=0.115",
   "uvicorn[standard]>=0.30",
   "psycopg[binary]>=3.2",

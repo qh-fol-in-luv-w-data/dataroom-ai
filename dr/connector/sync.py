@@ -21,7 +21,6 @@ import threading
 import time
 from typing import Callable
 
-from psycopg.types.json import Jsonb  # noqa: F401  (kept for future payloads)
 
 from dr.config import settings
 from dr.db import pg

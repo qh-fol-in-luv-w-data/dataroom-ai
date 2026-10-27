@@ -116,7 +116,7 @@ def parse_pdf(data: bytes, name: str) -> ParsedDoc:
     scan_pages: list[int] = []
     scan_png: dict[int, bytes] = {}
     chart_img: dict[int, object] = {}
-    want_charts = settings.ocr_engine in ("vintern", "vl")
+    want_charts = settings.ocr_engine == "vl"          # chart pictures are read by PaddleOCR-VL
     with PDFIUM:
         pdf = pdfium.PdfDocument(data)
         try:

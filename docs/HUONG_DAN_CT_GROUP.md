@@ -81,8 +81,9 @@ Mật khẩu chung nằm trong `data/ctg/tenant/DEMO_ACCOUNTS.md` (chỉ trên m
 | `scripts/ctg_table_eval.py` | Benchmark 8 câu bảng/biểu đồ có đáp án, chạy được nhiều model |
 | `dr/core/conversation.py` | Lịch sử hội thoại phía server theo (người dùng, cuộc trò chuyện); nhận diện câu nối tiếp / tổng hợp |
 | `dr/core/tables.py` | Lớn nhất/nhỏ nhất và so sánh nhiều dòng tính bằng code trên các dòng bảng |
-| `dr/ingest/charts.py` | Biểu đồ dạng ảnh: PaddleOCR-VL đọc thành bảng số (hoặc Vintern + PP-DocLayoutV3) |
-| `dr/ingest/vintern.py` | Engine OCR Vintern-1B-v3.5 (tuỳ chọn `DR_OCR_ENGINE=vintern`) |
+| `dr/ingest/charts.py` | Biểu đồ dạng ảnh trên trang PDF có chữ: PP-DocLayoutV3 dò vùng biểu đồ, chỉ trang có biểu đồ mới gửi PaddleOCR-VL đọc thành bảng số |
+| `dr/ingest/ocr_md.py` | Đọc file scan/ảnh từ Markdown có sẵn (`DR_OCR_MD_DIR`) thay vì OCR lại; khớp cả đường dẫn bị rút gọn `~` |
+| `scripts/export_md.py` | Xuất toàn bộ data room đã nạp ra Markdown (`<thư mục>/<tên file>.md`) + `INDEX.md` liệt kê mọi file và trạng thái |
 
 ### 2.2 Thay đổi trong luồng trả lời (`dr/core/answer.py`, `verify.py`, `llm.py`)
 
@@ -105,8 +106,8 @@ Mật khẩu chung nằm trong `data/ctg/tenant/DEMO_ACCOUNTS.md` (chỉ trên m
 - **Biểu đồ gốc** Excel/PowerPoint/Word: đọc số liệu lưu trong file biểu đồ (`chart_text`).
 - **PDF**: mọi lời gọi pdfium đi qua khoá `ocr.PDFIUM` (pdfium không an toàn đa luồng – từng crash); trang có
   ảnh hoặc nét vẽ + dòng toàn số được dò biểu đồ.
-- **OCR**: `DR_OCR_ENGINE=vl` (PaddleOCR-VL-1.6, mặc định cho CT Group) hoặc `vintern`; **không tự chuyển sang
-  model khác khi lỗi** – file bị đánh dấu lỗi kèm lý do. Kết quả OCR lưu theo nội dung ảnh (ảnh trùng không OCR
+- **OCR**: chỉ PaddleOCR-VL-1.6 (`DR_OCR_ENGINE=vl`; `ppocr` là PP-OCRv5 latin chạy CPU cho máy không có server);
+  **không tự chuyển sang model khác khi lỗi** – file bị đánh dấu lỗi kèm lý do. Kết quả OCR lưu theo nội dung ảnh (ảnh trùng không OCR
   lại). Ảnh dưới 3 vùng chữ bỏ qua bước đọc.
 - `ingest.py --shard i/n` để chạy nhiều tiến trình; `DR_BACKGROUND_INGEST=0` tắt luồng nạp nền của app khi
   đang nạp hàng loạt.
@@ -116,11 +117,11 @@ Mật khẩu chung nằm trong `data/ctg/tenant/DEMO_ACCOUNTS.md` (chỉ trên m
 | Biến | Mặc định | Ý nghĩa |
 |---|---|---|
 | `DR_COMPANY` | Công ty CP Năng lượng Sao Mai | Tên công ty trong prompt |
-| `DR_OCR_ENGINE` | `vl` | `vl` (PaddleOCR-VL) · `vintern` · `ppocr` |
+| `DR_OCR_ENGINE` | `vl` | `vl` (PaddleOCR-VL-1.6) · `ppocr` (PP-OCRv5 latin, CPU) |
 | `DR_OCR_CROSSCHECK` | `1` | `0`: bỏ PP-OCR đọc lần hai (nhanh hơn, mất đánh dấu "số chưa chắc") |
 | `DR_OCR_MIN_TEXT_BOXES` | `3` | Ảnh ít vùng chữ hơn thì bỏ qua bước đọc |
 | `DR_BACKGROUND_INGEST` | `1` | `0`: app không tự nạp nền |
-| `DR_VINTERN_TILES` / `_SPARSE` | `6` / `4` | Số ô cắt ảnh cho Vintern |
+| `DR_OCR_MD_DIR` | (trống) | Thư mục Markdown (`data/ctg/md`): file scan/ảnh có `.md` ở đây được đọc từ `.md`, không OCR lại |
 
 ### 2.5 Kết quả đo
 

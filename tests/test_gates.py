@@ -1,7 +1,6 @@
 import pytest
 
 from dr import audit
-from dr.config import NEUTRAL_REFUSAL
 from dr.connector.sync import Connector
 from dr.core import answer
 from dr.core.index import SearchIndex

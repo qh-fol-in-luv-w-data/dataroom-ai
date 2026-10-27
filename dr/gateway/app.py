@@ -25,7 +25,6 @@ from dr.config import RATE_MESSAGE, settings
 from dr.connector.sync import Connector
 from dr.core import answer as answer_mod
 from dr.core import conversation
-from dr.core.index import SearchIndex
 from dr.core.pgindex import make_index
 from dr.db import pg
 from dr.gateway import accounts, auth, scenarios

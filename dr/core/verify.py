@@ -75,6 +75,35 @@ def vn_numbers(text: str) -> list[set[Decimal]]:
     return [v for v in (_parse_number(m.group(0)) for m in _NUM.finditer(text)) if v]
 
 
+def numbers_with_digits(text: str) -> list[tuple[str, set[Decimal]]]:
+    """Each number as (the number as written, its plausible values)."""
+    out = []
+    for m in _NUM.finditer(text):
+        vals = _parse_number(m.group(0))
+        if vals:
+            out.append((m.group(0), vals))
+    return out
+
+
+def _same_digits(a: str, b: str) -> bool:
+    """Same digits, separators aside; a decimal written with fewer trailing zeros (2.786,9 / 2.786,90) too,
+    but not when a last group of exactly three digits makes it a thousands group ('4.000' is not '4.0')."""
+    da, db = re.sub(r"\D", "", a), re.sub(r"\D", "", b)
+    if da == db:
+        return True
+    last = [re.split(r"[.,]", x)[-1] for x in (a, b)]
+    return (da.rstrip("0") == db.rstrip("0") and all(re.search(r"[.,]", x) for x in (a, b))
+            and all(len(g) != 3 for g in last))
+
+
+def number_supported(written: str, vals: set[Decimal], sources: list[tuple[str, set[Decimal]]]) -> bool:
+    """A number of the answer is supported by a source number with the same value AND the same digits.
+    Value alone is not enough: '4.000' (four thousand, or 4.000 read as a decimal) equals '4.0' of
+    'CYBER SALE 4.0' as a decimal, and an invented '4.000 USD' passed. Digits alone are not enough either:
+    '1.250' and '12,50' share them."""
+    return any(v & vals and _same_digits(written, w) for w, v in sources)
+
+
 def quote_found(quote: str, passage: str, fuzzy: bool) -> bool:
     q, p = norm(quote), norm(passage)
     if len(q) < 8:
@@ -96,8 +125,7 @@ def check(raw_claims: list[dict], labels: dict[str, int], passages: dict[int, di
           ) -> tuple[list[Claim], list[tuple[dict, str]]]:
     """Numbers that already appear in the question (e.g. the year asked about) are context,
     not facts asserted by the answer, so they need not appear in the quote."""
-    q_vals = vn_numbers(question)
-    q_union = set().union(*q_vals) if q_vals else set()
+    q_nums = numbers_with_digits(question)
     kept: list[Claim] = []
     dropped: list[tuple[dict, str]] = []
     given = norm(" ".join(p["text"] for p in passages.values()))
@@ -123,9 +151,8 @@ def check(raw_claims: list[dict], labels: dict[str, int], passages: dict[int, di
         if not good:
             dropped.append((rc, reason or "không có trích dẫn hợp lệ"))
             continue
-        quote_vals = [v for g in good for v in vn_numbers(g.quote)]
-        quote_union = set().union(*quote_vals) if quote_vals else set()
-        missing = [vals for vals in vn_numbers(text) if not (vals & quote_union) and not (vals & q_union)]
+        sources = [n for g in good for n in numbers_with_digits(g.quote)] + q_nums
+        missing = [d for d, vals in numbers_with_digits(text) if not number_supported(d, vals, sources)]
         if missing:
             dropped.append((rc, "con số trong câu trả lời không khớp câu trích"))
             continue

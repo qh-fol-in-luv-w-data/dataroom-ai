@@ -19,7 +19,7 @@ from unidecode import unidecode
 from dr import audit
 from dr.config import (BLOCKED_MESSAGE, NEUTRAL_REFUSAL, OUT_OF_SCOPE_MESSAGE, RETRY_MESSAGE, UNAVAILABLE_MESSAGE,
                        settings)
-from dr.core import accents, audience, conversation, gates, intent, tables, verify
+from dr.core import accents, audience, conflicts, conversation, facts, gates, intent, tables, verify
 from dr.core.index import SearchIndex
 from dr.core import lang as lang_mod
 from dr.core import review
@@ -80,6 +80,21 @@ _MARKER = re.compile(r"mã kiểm soát:?\s*ks-[a-z]+-\d{4}", re.IGNORECASE)
 def _signature(text: str) -> str:
     """Content signature ignoring per-document control markers, case and spacing."""
     return hashlib.sha1(verify.norm(_MARKER.sub(" ", text)).encode()).hexdigest()
+
+
+def _weight(p: dict) -> float:
+    """Trust in the source: a rejected / old version lower, a signed / approved / legal document higher."""
+    return conflicts.source_weight(p.get("path", ""), p["name"])
+
+
+def _date_note(p: dict) -> str:
+    d = conflicts.doc_date(p["name"])
+    return f", ngày {d:%d/%m/%Y}" if d else ""
+
+
+def _with_context(p: dict) -> str:
+    """A passage as the reranker sees it: where its file sits (company › project › folder › file), then the text."""
+    return f"{p['context']}\n{p['text']}" if p.get("context") else p["text"]
 
 
 def select_passages(order: list[int], passages: dict[int, dict], chosen: set[str],
@@ -375,6 +390,7 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
     trace.add("Phân loại câu hỏi", True, intent=plan.intent, named_document=bool(whole_doc), parts=len(parts))
 
     trace.stage("search")
+    versions: dict[int, list[int]] = {}      # representative chunk -> other copies / versions of its text
     if whole_doc:
         hits = [(c, 1.0) for c in whole_doc]
         trace.add("Đọc toàn bộ tài liệu được nêu tên (RLS)", True, chunks=len(hits))
@@ -389,6 +405,8 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
                 part_hits[qq], info = index.search_as(oid, qq, v, k=k, site=scope_site)
             else:
                 part_hits[qq], info = index.search(set(allowed), qq, v, k=k), {}
+            for rep, others in info.pop("versions", {}).items():     # other versions: for the conflict check
+                versions.setdefault(rep, []).extend(others)
         hits, have = [], set()
         for hs in part_hits.values():
             hits += [h for h in hs if h[0] not in have and not have.add(h[0])]
@@ -414,7 +432,8 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
         ranked = []
         for qq in [q_search] + parts:
             cand = [c for c, _ in part_hits[qq] if c in allowed_order]
-            sc = deps.rerank(qq, [passages[c]["text"] for c in cand]) if cand else []
+            sc = [s * _weight(passages[c]) for s, c in
+                  zip(deps.rerank(qq, [_with_context(passages[c]) for c in cand]) if cand else [], cand)]
             ranked.append([c for _, c in sorted(zip(sc, cand), key=lambda x: -x[0])])
             top_rerank = max([top_rerank or 0.0, *sc]) if sc else top_rerank
         order, seen_o = [], set()
@@ -426,7 +445,8 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
         trace.add("Rerank bge-reranker-v2-m3 theo từng phần", True, parts=len(parts),
                   top_score=round(top_rerank, 3) if top_rerank is not None else None)
     elif deps.rerank and order and not whole_doc:
-        scores = deps.rerank(q_search, [passages[c]["text"] for c in order])
+        scores = [s * _weight(passages[c]) for s, c in
+                  zip(deps.rerank(q_search, [_with_context(passages[c]) for c in order]), order)]
         top_rerank = max(scores) if scores else None
         for c, s in zip(order, scores):
             passages[c]["rerank"] = s
@@ -499,7 +519,8 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
     # Full-text questions get the source sentences themselves: the model just picks sentence ids.
     verbatim = plan.verbatim
     llm_call = deps.llm_quotes if verbatim and deps.llm_quotes else deps.llm
-    llm_in = [{"chunk_id": c, "text": passages[c]["text"], "source": passages[c]["name"]} for c in selected]
+    llm_in = [{"chunk_id": c, "text": passages[c]["text"], "source": passages[c].get("context") or passages[c]["name"]}
+              for c in selected]
     n_sent = settings.max_sentences if plan.intent == "fact" else plan.sentences
     llm_in = focus_sentences(q_search, llm_in, deps, trace, n=n_sent, keep_order_only=bool(whole_doc),
                              queries=parts, budget=settings.prompt_chars_fact if plan.intent == "fact"
@@ -515,9 +536,34 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
         rows_in = [{"chunk_id": c, "text": sel_passages[c]["text"]} for c in selected]
         det = tables.extreme(q_search, rows_in) or tables.compare(q_search, rows_in)
     if det:
-        raw, labels = det
         trace.add("Bảng: lớn nhất/nhỏ nhất hoặc so sánh tính trực tiếp trên các dòng (không qua LLM)", True,
-                  rows=len(raw["claims"]))
+                  rows=len(det[0]["claims"]))
+    # a document number, a plot, a tax code: looked up in the fact index (facts.py) instead of read by the
+    # model from a long OCR page. Facts come under RLS, their files are live-checked like any passage, and the
+    # answer cites the source lines and is verified as usual. Several fitting values are all given.
+    if not det and not whole_doc and plan.intent in ("fact", "multi"):
+        found = facts.lookup(oid, q_search)
+        fps = gates.fetch_passages(oid, [r["chunk_id"] for r in found]) if found else {}
+        live = gates.live_check(tenant, oid, {p["item_id"]: p["ctag"] for p in fps.values()}) if fps else {}
+        found = [r for r in found if r["chunk_id"] in fps and live[fps[r["chunk_id"]]["item_id"]][0]]
+        if found:
+            labels, claims = {}, []
+            for k, r in enumerate(found, 1):
+                labels[f"F{k}"] = r["chunk_id"]
+                sel_passages[r["chunk_id"]] = fps[r["chunk_id"]]
+                cites = [{"doc": f"F{k}", "quote": q} for q in r["quotes"]]
+                # a project or code the question names ('MONTALP') that the fact's own passage does not: the line
+                # of the same document naming it is cited too (the plot is in clause 2.2, the project on page 1),
+                # so the answer shows why the document is about it and passes the named-code check honestly
+                for line, p in facts.naming_lines(oid, q_search, r["item_id"], fps[r["chunk_id"]]["text"]):
+                    labels[f"F{k}N{p['chunk_id']}"] = p["chunk_id"]
+                    sel_passages[p["chunk_id"]] = p
+                    cites.append({"doc": f"F{k}N{p['chunk_id']}", "quote": line})
+                claims.append({"text": facts.claim_for(r), "citations": cites})
+            det = ({"claims": claims, "no_answer": False}, labels)
+            trace.add("Chỉ mục dữ kiện: trả lời bằng tra cứu (không qua LLM)", True, facts=len(claims))
+    if det:
+        raw, labels = det
     else:
         try:
             raw, labels = _call(llm_call, q_llm, llm_in, lang=lang, style=plan.intent, max_claims=plan.claims)
@@ -557,7 +603,11 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
     # really addresses it (both signals), otherwise the polite out-of-scope message is better than a
     # loosely related line ("room" in "Data Room" vs "foreign ownership room").
     if (plan.relevance or other) and deps.rerank and kept and settings.relevance_min > 0:
-        texts = [cl.text + " " + " ".join(c.quote for c in cl.citations) for cl in kept]
+        # the cited documents' place (company › project › folder) is part of what the claim is about: a poster
+        # line "Thu nhập 50tr mỗi tháng" answers a question about the Léman Parking Lot job ad only through it
+        texts = [" ".join([cl.text, *(c.quote for c in cl.citations),
+                           *dict.fromkeys(sel_passages[c.chunk_id].get("context", "") for c in cl.citations)])
+                 for cl in kept]
         rel = deps.rerank(q_search, texts)
         ovl = [intent.term_overlap(q_search, t) for t in texts]
         ok = [(r >= settings.relevance_min and o >= settings.relevance_overlap) if other else
@@ -574,10 +624,42 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
             cl.nli = round(sc, 3)
         trace.add("NLI mDeBERTa (tín hiệu phụ)", True, scores=[cl.nli for cl in kept])
 
+    # ---- documents that disagree: another version of the same unit gives another number. Every value is
+    # shown with its source and date instead of one picked silently (two B4 floor plans: 52.55 / 52.88 m²).
+    found_conflicts = []
+    if kept and not verbatim and plan.intent in ("fact", "table", "multi"):
+        live = set(chosen)
+        cands = {c: passages[c] for c in order if passages[c]["item_id"] in live}
+        # the other versions of the passages the answer cites (grouped away by the search) are compared too;
+        # they are fetched under RLS and their files are live-checked with the cited ones below
+        extra_ids = [v for cl in kept for c in cl.citations for v in versions.get(c.chunk_id, [])]
+        for c, p in gates.fetch_passages(oid, extra_ids).items():
+            passages[c] = p
+            cands[c] = p
+        extra = []
+        for cl in kept[:2]:
+            src = sel_passages[cl.citations[0].chunk_id] if cl.citations else None
+            for cf in conflicts.find(q_search, cl.text, [c.quote for c in cl.citations],
+                                     {c.chunk_id for c in cl.citations}, cands):
+                other = passages[cf.chunk_id]
+                d_src, d_oth = (conflicts.doc_date(src["name"]) if src else None), conflicts.doc_date(other["name"])
+                when = (" – bản mới hơn" if d_src and d_oth and d_oth > d_src else
+                        " – bản cũ hơn" if d_src and d_oth and d_oth < d_src else "")
+                sel_passages[cf.chunk_id] = other
+                extra.append(verify.Claim(f"Lưu ý: tài liệu khác ghi {cf.value} ({other['name']}{_date_note(other)}{when}).",
+                                          [verify.Citation(cf.chunk_id, cf.quote)], None))
+                found_conflicts.append({"value": cf.value, "item_id": other["item_id"], "name": other["name"]})
+        if extra:
+            kept += extra
+            trace.add("Phát hiện tài liệu ghi số liệu khác nhau", True, conflicts=len(extra))
+
     # ---- gate 2 again on cited files, gate 4 again
-    cited_items = {sel_passages[c.chunk_id]["item_id"] for cl in kept for c in cl.citations}
-    res2 = gates.live_check(tenant, oid, {f: next(sel_passages[c]["ctag"] for c in selected
-                                                   if sel_passages[c]["item_id"] == f) for f in cited_items})
+    # cited file -> the version its passages were indexed from (a conflicting passage is cited without having
+    # been among the selected ones, so the version is read from the cited passage itself)
+    cited_versions = {sel_passages[c.chunk_id]["item_id"]: sel_passages[c.chunk_id]["ctag"]
+                      for cl in kept for c in cl.citations}
+    cited_items = set(cited_versions)
+    res2 = gates.live_check(tenant, oid, cited_versions)
     failed2 = {f for f, (ok, _) in res2.items() if not ok}
     if failed2:
         kept = [cl for cl in kept if not any(sel_passages[c.chunk_id]["item_id"] in failed2 for c in cl.citations)]
@@ -667,15 +749,15 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
         "files_checked": len(chosen) + len(dropped_live),
         "files_dropped_live": len(dropped_live),
         "cited": [{"item_id": c["item_id"], "locator": c["locator"], "chunk_id": c["chunk_id"]} for c in cites],
-        "versions": {f: sel_passages[next(c for c in selected if sel_passages[c]["item_id"] == f)]["ctag"]
-                     for f in cited_items},
+        "versions": {f: cited_versions[f] for f in cited_items},
         "answer_sha256": hashlib.sha256(answer_text.encode()).hexdigest(),
         "dropped_claims": [r for _, r in dropped],
     })
     trace.add("Ghi nhật ký (chuỗi hash)", True, audit_seq=seq)
     result = {"refused": False, "message": None, "claims": claims_out, "citations": cites, "trace": trace.steps,
               "audit_seq": seq, "lang": lang, "mode": plan.intent, "verbatim": verbatim, "notice": notice,
-              "standalone_question": question if question != asked else None, "recap": bool(recap_chunks)}
+              "standalone_question": question if question != asked else None, "recap": bool(recap_chunks),
+              "conflicts": found_conflicts}
     # ---- sensitive questions (BR-08): investors get the answer only after a reviewer approves it
     if topics and not is_staff and settings.sensitive_mode == "review":
         trace.add("Câu hỏi nhạy cảm → bản nháp chờ người duyệt", True, topics=topics)

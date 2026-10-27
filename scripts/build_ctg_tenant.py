@@ -41,7 +41,7 @@ MATRIX = {
     "02. Tài chính/2.1 Báo cáo tài chính": "ABE",
     "02. Tài chính/2.2 Ngân sách & Dòng tiền": "ABE",
     "02. Tài chính/2.3 Kiểm toán": "ABE",
-    "03. Pháp lý": "ABCDE",
+    "03. Pháp lý": "ABCE",
     "03. Pháp lý/3.1 Giấy phép & Phê duyệt": "ABC",
     "03. Pháp lý/3.2 Hợp đồng": "ABC",
     "03. Pháp lý/3.3 Tuân thủ & Quy định": "ABC",
