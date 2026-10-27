@@ -779,54 +779,122 @@ function watchDrafts() {
   }, 8000);
 }
 
+// ---- admin & review helpers (part 4)
+const fmtTime = (iso) => { try { return new Date(iso).toLocaleString("vi-VN"); } catch { return iso || ""; } };
+// Confirmation dialog for anything destructive: says exactly what changes, runs onOk only after the click.
+function confirmDo({ title, lines = [], label = "Xác nhận", danger = true, onOk }) {
+  const ov = modal({ title, body: `<ul class="cf-list">${lines.map((l) => `<li>${l}</li>`).join("")}</ul>`,
+    actions: [{ label: "Hủy" }, { label, primary: true, onClick: async () => { try { await onOk(); } catch { return false; } } }] });
+  if (danger) ov.querySelector('[data-act="1"]')?.classList.add("danger-fill");
+  return ov;
+}
+
+// ------------------------------------------------------------------ sensitive-question drafts (asker)
 async function pageDrafts(page) {
   page.innerHTML = '<div class="card empty">Đang tải…</div>';
   const mine = await api("/api/my/drafts");
-  if (!mine.length) { page.innerHTML = '<div class="card empty">Bạn chưa có câu hỏi nào cần duyệt.</div>'; return; }
+  if (!mine.length) {
+    page.innerHTML = `<div class="card empty rv-empty">${icon("shield")}<b>Bạn chưa có câu hỏi nào cần duyệt.</b>
+      <span>Câu hỏi thuộc chủ đề nhạy cảm sẽ được gửi cho Ban IPO và hiện ở đây cùng trạng thái duyệt.</span></div>`; return;
+  }
   const ST = { pending: ["Đang chờ duyệt", "warn"], approved: ["Đã duyệt", "ok"], rejected: ["Không phát hành", "bad"] };
-  page.innerHTML = mine.map((d, k) => `<div class="card" style="margin-bottom:14px"><div class="card-h">
-      <span class="chip ${ST[d.status][1]}">${ST[d.status][0]}</span><h3 style="flex:1">${esc(d.question)}</h3>
-      <span class="muted small">#${d.draft_id} · ${new Date(d.created_at).toLocaleString()}</span></div>
-      <div class="card-b"><div class="chips">${d.topics.map((t) => `<span class="chip">${esc(t)}</span>`).join("")}</div>
-      ${d.status === "pending" ? '<p class="muted">Ban IPO đang xem xét. Câu trả lời sẽ hiện ở đây sau khi được duyệt.</p>'
-        : `<div class="a-card" id="ans-d${k}">${renderAnswer(draftToAnswer(d), "d" + k)}</div>`}</div></div>`).join("");
-  mine.forEach((d, k) => { const el = $("#ans-d" + k); if (el) wireAnswer(el, "d" + k); });
+  const cnt = (s) => mine.filter((d) => d.status === s).length;
+  let flt = "all";
+  const draw = () => {
+    const rows = mine.map((d, k) => [d, k]).filter(([d]) => flt === "all" || d.status === flt);
+    page.innerHTML = `<div class="rv-summary" role="tablist">
+        <button role="tab" data-f="all" class="${flt === "all" ? "active" : ""}"><b>${mine.length}</b> Tất cả</button>
+        ${Object.entries(ST).map(([k, [l, c]]) => `<button role="tab" data-f="${k}" class="${flt === k ? "active" : ""}"><b class="${c}">${cnt(k)}</b> ${l}</button>`).join("")}</div>
+      ${rows.map(([d, k]) => `<div class="card rv-draft" style="margin-bottom:14px"><div class="card-h">
+        <span class="chip ${ST[d.status][1]}">${ST[d.status][0]}</span><h3 style="flex:1">${esc(d.question)}</h3>
+        <span class="muted small">#${d.draft_id} · ${fmtTime(d.created_at)}</span></div>
+        <div class="card-b"><div class="chips">${d.topics.map((t) => `<span class="chip">${esc(t)}</span>`).join("")}</div>
+        ${d.status === "pending" ? `<p class="muted">${icon("info")} Ban IPO đang xem xét. Câu trả lời sẽ hiện ở đây sau khi được duyệt.</p>`
+          : `<div class="a-card" id="ans-d${k}">${renderAnswer(draftToAnswer(d), "d" + k)}</div>`}</div></div>`).join("") || '<div class="card empty">Không có câu hỏi ở trạng thái này.</div>'}`;
+    $$("[data-f]", page).forEach((b) => b.onclick = () => { flt = b.dataset.f; draw(); });
+    rows.forEach(([d, k]) => { const el = $("#ans-d" + k); if (el) wireAnswer(el, "d" + k); });
+  };
+  draw();
 }
 
 // ------------------------------------------------------------------ reviewer
 let REVIEW_TAB = "pending";
 async function pageReview(page) {
-  page.innerHTML = `<div class="subtabs" role="tablist">${[["pending", "Chờ duyệt"], ["approved", "Đã duyệt"], ["rejected", "Đã từ chối"]]
-    .map(([k, l]) => `<button role="tab" data-t="${k}" class="${REVIEW_TAB === k ? "active" : ""}">${l}</button>`).join("")}</div>
+  const TABS = [["pending", "Chờ duyệt"], ["approved", "Đã duyệt"], ["rejected", "Đã từ chối"]];
+  page.innerHTML = `<div class="subtabs" role="tablist">${TABS.map(([k, l]) => `<button role="tab" data-t="${k}" class="${REVIEW_TAB === k ? "active" : ""}">${l} <span class="chip" data-cnt="${k}">…</span></button>`).join("")}</div>
     <div id="rq"><div class="card empty">Đang tải…</div></div>`;
   $$(".subtabs button", page).forEach((b) => b.onclick = () => { REVIEW_TAB = b.dataset.t; pageReview(page); });
+  // counts per status (the queue API is per status; the other tabs load in the background)
+  TABS.filter(([k]) => k !== REVIEW_TAB).forEach(([k]) => api("/api/review/drafts?status=" + k)
+    .then((r) => { const c = $(`[data-cnt="${k}"]`, page); if (c) c.textContent = r.length; }).catch(() => {}));
   let q;
   try { q = await api("/api/review/drafts?status=" + REVIEW_TAB); }
   catch (e) { $("#rq").innerHTML = `<div class="card empty">${esc(e.message)}</div>`; return; }
-  if (!q.length) { $("#rq").innerHTML = '<div class="card empty">Không có bản nháp nào.</div>'; return; }
+  const own = $(`[data-cnt="${REVIEW_TAB}"]`, page); if (own) own.textContent = q.length;
+  if (!q.length) { $("#rq").innerHTML = `<div class="card empty rv-empty">${icon("check")}<b>${REVIEW_TAB === "pending" ? "Không còn bản nháp nào chờ duyệt." : "Chưa có bản nháp nào ở mục này."}</b></div>`; return; }
+  const ext = (n) => (n.split(".").pop() || "").toLowerCase();
+  const SL = { pending: ["Chờ duyệt", "warn"], approved: ["Đã duyệt", "ok"], rejected: ["Đã từ chối", "bad"] };
   $("#rq").innerHTML = q.map((d) => `<div class="card review" data-id="${d.draft_id}" style="margin-bottom:16px">
-    <div class="card-h">${avatar(d.asker.name, 28)}<div style="flex:1"><b>${esc(d.asker.name)}</b> <span class="muted small">${esc(d.asker.org)}</span>
-      <div class="small">${esc(d.question)}</div></div>
-      <div class="chips">${d.topics.map((t) => `<span class="chip warn">${esc(t)}</span>`).join("")}${d.lang === "en" ? '<span class="chip info">EN</span>' : ""}</div></div>
-    <div class="card-b">${!d.visible ? `<div class="alert bad">${icon("lock")} ${esc(d.reason)} — bản nháp bị ẩn để không lộ tài liệu ngoài quyền của bạn.</div>`
-      : `<p class="muted small" style="margin-top:0">Mỗi ý có thể sửa lời; xóa trắng một ý để bỏ ý đó. Nguồn trích dẫn không thay đổi.</p>
-      ${d.answer.claims.map((c, n) => `<label class="field">Ý ${n + 1} <span class="muted small">nguồn [${c.refs.join(", ")}]</span>
-        <textarea class="input" rows="2" data-claim="${n}" ${d.status !== "pending" ? "disabled" : ""}>${esc(c.text)}</textarea></label>`).join("")}
-      <details class="trace"><summary>${icon("file")} ${d.answer.citations.length} trích dẫn</summary>${d.answer.citations.map((c) =>
-        `<div class="cite" style="margin-top:8px"><div class="cite-top"><span class="cite-n">${c.n}</span>${ftype((c.name.split(".").pop() || "").toLowerCase())}<span class="cite-name">${esc(c.name)}</span></div>
-        <div class="cite-loc">${esc(c.locator)}</div><blockquote>${esc(c.quote)}</blockquote>
-        <button class="linkbtn" data-open="${esc(c.item_id)}">Xem file ${icon("ext")}</button></div>`).join("")}</details>
-      ${d.status === "pending" ? `<div class="inline-form"><input class="input" data-note placeholder="Ghi chú cho người hỏi (khi từ chối) hoặc cho nhật ký" style="flex:1;max-width:none">
-        <button class="btn danger" data-act="reject">${icon("x")} Từ chối</button>
-        <button class="btn primary" data-act="approve">${icon("check")} Duyệt & phát hành</button></div>`
-        : `<p class="muted small">${d.status === "approved" ? "Đã duyệt" : "Đã từ chối"} bởi ${esc(d.reviewer || "")}${d.note ? " · " + esc(d.note) : ""}</p>`}`}
-    </div></div>`).join("");
-  $$(".review[data-id]", page).forEach((card) => $$("[data-act]", card).forEach((b) => b.onclick = async () => {
-    const body = { action: b.dataset.act, note: $("[data-note]", card).value || null };
-    if (body.action === "approve") body.claims = $$("[data-claim]", card).map((t) => t.value);
-    try { await post(`/api/review/drafts/${card.dataset.id}`, body); toast(body.action === "approve" ? "Đã duyệt và phát hành" : "Đã từ chối"); pageReview(page); }
-    catch (e) { toast(e.message, "bad"); }
-  }));
+    <div class="card-h">${avatar(d.asker.name, 28)}<div style="flex:1"><b>${esc(d.asker.name)}</b> <span class="muted small">${esc(d.asker.org)} · #${d.draft_id} · ${fmtTime(d.created_at)}</span></div>
+      <div class="chips">${d.topics.map((t) => `<span class="chip warn">${esc(t)}</span>`).join("")}${d.lang === "en" ? '<span class="chip info">EN</span>' : ""}
+      <span class="chip ${SL[d.status][1]}">${SL[d.status][0]}</span></div></div>
+    ${!d.visible ? `<div class="card-b"><div class="alert bad">${icon("lock")} ${esc(d.reason)} — bản nháp bị ẩn để không lộ tài liệu ngoài quyền của bạn.</div></div>`
+    : `<div class="rv-cols">
+      <section class="rv-col"><h4>1. Câu hỏi</h4><div class="rv-q">${esc(d.question)}</div>
+        <p class="muted small">Người hỏi: ${esc(d.asker.name)}${d.asker.org ? " — " + esc(d.asker.org) : ""}</p></section>
+      <section class="rv-col"><h4>2. Bản nháp trả lời</h4>
+        <p class="muted small" style="margin-top:0">${d.status === "pending" ? "Mỗi ý có thể sửa lời; xóa trắng một ý để bỏ ý đó. Nguồn trích dẫn không đổi." : "Nội dung đã chốt."}</p>
+        ${d.answer.claims.map((c, n) => `<label class="field">Ý ${n + 1} <span class="muted small">nguồn [${c.refs.join(", ")}]</span>
+          <textarea class="input" rows="3" data-claim="${n}" data-orig="${esc(c.text)}" ${d.status !== "pending" ? "disabled" : ""}>${esc(c.text)}</textarea></label>`).join("")}</section>
+      <section class="rv-col"><h4>3. Nguồn trích dẫn <span class="chip">${d.answer.citations.length}</span></h4>
+        ${d.answer.citations.map((c) => `<div class="cite"><div class="cite-top"><span class="cite-n">${c.n}</span>${ftype(ext(c.name))}<span class="cite-name">${esc(c.name)}</span></div>
+          <div class="cite-loc">${esc(c.locator)}</div><blockquote>${esc(c.quote)}</blockquote>
+          <button class="linkbtn" data-open="${esc(c.item_id)}">Xem file ${icon("ext")}</button></div>`).join("") || '<p class="muted small">Không có trích dẫn.</p>'}</section></div>
+    <div class="rv-foot">${d.status === "pending" ? `<input class="input" data-note placeholder="Ghi chú (tùy chọn khi duyệt; bắt buộc khi từ chối)" aria-label="Ghi chú" style="flex:1;max-width:none">
+        <span class="chip warn hidden" data-edited>${icon("edit")} Đã chỉnh sửa</span>
+        <button class="btn ghost hidden" data-undo>${icon("refresh")} Hoàn tác sửa</button>
+        <button class="btn danger" data-act="reject">${icon("x")} Từ chối…</button>
+        <button class="btn primary" data-act="approve">${icon("check")} Duyệt & phát hành</button>`
+      : `<span class="muted small">${d.status === "approved" ? "Đã duyệt" : "Đã từ chối"} bởi ${esc(d.reviewer || "")}${d.note ? " · Ghi chú: " + esc(d.note) : ""}</span>`}</div>`}
+    </div>`).join("");
+  $$(".review[data-id]", page).forEach((card) => {
+    if (!$("[data-act]", card)) return;
+    const draft = q.find((x) => String(x.draft_id) === card.dataset.id);
+    const areas = $$("[data-claim]", card);
+    const edited = () => areas.some((t) => t.value !== t.dataset.orig);
+    const sync = () => {
+      const e = edited();
+      $("[data-edited]", card).classList.toggle("hidden", !e); $("[data-undo]", card).classList.toggle("hidden", !e);
+      $('[data-act="approve"]', card).innerHTML = `${icon("check")} ${e ? "Duyệt bản đã sửa" : "Duyệt nguyên văn"}`;
+    };
+    areas.forEach((t) => t.oninput = sync);
+    $("[data-undo]", card).onclick = () => { areas.forEach((t) => t.value = t.dataset.orig); sync(); };
+    sync();
+    const send = async (body, okMsg) => {
+      try { await post(`/api/review/drafts/${card.dataset.id}`, body); toast(okMsg); pageReview(page); }
+      catch (e) { toast(e.message, "bad"); throw e; }
+    };
+    $('[data-act="approve"]', card).onclick = () => {
+      const claims = areas.map((t) => t.value);
+      if (!claims.some((c) => c.trim())) return toast("Cần giữ lại ít nhất một ý để phát hành. Nếu không phát hành, hãy chọn Từ chối.", "bad");
+      const kept = claims.filter((c) => c.trim()).length;
+      confirmDo({ title: "Duyệt và phát hành?", danger: false, label: "Duyệt & phát hành", lines: [
+        `Câu trả lời (${kept}/${claims.length} ý${edited() ? ", có chỉnh sửa lời" : ", nguyên văn"}) sẽ hiện ngay cho <b>${esc(draft.asker.name)}</b>.`,
+        "Nguồn trích dẫn giữ nguyên. Quyết định được ghi vào nhật ký." ],
+        onOk: () => send({ action: "approve", note: $("[data-note]", card).value || null, claims }, "Đã duyệt và phát hành") });
+    };
+    $('[data-act="reject"]', card).onclick = () => {
+      const ov = modal({ title: "Từ chối phát hành?", body: `<p>Người hỏi <b>${esc(draft.asker.name)}</b> sẽ nhận thông báo “Ban IPO không phát hành câu trả lời” kèm lý do bên dưới.</p>
+        <label class="field">Lý do từ chối (bắt buộc)<textarea class="input" id="rj-reason" rows="3" maxlength="500">${esc($("[data-note]", card).value)}</textarea></label>
+        <p class="small" id="rj-err" style="color:var(--bad);min-height:18px;margin:6px 0 0"></p>`,
+        actions: [{ label: "Hủy" }, { label: "Từ chối phát hành", primary: true, onClick: async (o) => {
+          const reason = $("#rj-reason", o).value.trim();
+          if (!reason) { $("#rj-err", o).textContent = "Vui lòng nhập lý do từ chối."; $("#rj-reason", o).focus(); return false; }
+          try { await send({ action: "reject", note: reason }, "Đã từ chối"); } catch { return false; }
+        } }] });
+      ov.querySelector('[data-act="1"]').classList.add("danger-fill");
+    };
+  });
 }
 
 // ------------------------------------------------------------------ search
@@ -982,11 +1050,15 @@ async function pageScope(page) {
 }
 
 // ------------------------------------------------------------------ permissions (admin)
-let PERM_TAB = "users", DIR = null, PERM_SITE = "COMMON", PERM_FOLDER = null, USER_Q = "";
+let PERM_TAB = "users", DIR = null, PERM_SITE = "COMMON", PERM_FOLDER = null, USER_Q = "", USER_TYPE = "", USER_GROUP = "";
+let MX_SITE = "", MX_Q = "", MX_UNIQUE = false, MX_DEPTH = 1;
+const MX_CAP = 300;
 const uname = (oid) => DIR?.users.find((u) => u.oid === oid)?.name || oid;
-const gname = (gid) => GROUP_LABEL[gid] || gid;
+const gname = (gid) => GROUP_LABEL[gid] || DIR?.groups.find((g) => g.id === gid)?.name || gid;
+const gshort = (gid) => (GROUP_LABEL[gid] ? GROUP_LABEL[gid].replace(/^Nhóm /, "") : String(gid).split("-").pop());
 const principal = (g) => g.kind === "group" ? `${icon("users")} ${esc(gname(g.id))}` : g.kind === "user" ? `${icon("user")} ${esc(uname(g.id))}`
   : g.kind === "link_specific" ? `${icon("ext")} Link cho ${esc(uname(g.id))}` : `${icon("globe")} Link ${g.kind === "link_anyone" ? "Anyone" : "tổ chức"} (bị bỏ qua)`;
+const SP_NOTE = "AI chặn ngay; SharePoint áp thay đổi sau một khoảng trễ (mặc định 60 giây).";
 
 async function loadDir() { DIR = await api("/api/admin/directory"); return DIR; }
 
@@ -1002,43 +1074,126 @@ async function change(path, body, okMsg) {
 
 async function pagePerms(page) {
   page.innerHTML = `<div class="toolbar"><div class="subtabs" style="margin:0;flex:1;border:0" role="tablist">
-      ${[["users", "Người dùng"], ["groups", "Nhóm"], ["folders", "Thư mục & tài liệu"], ["sites", "Site & RAC"]].map(([k, l]) => `<button role="tab" data-t="${k}" class="${PERM_TAB === k ? "active" : ""}">${l}</button>`).join("")}</div>
+      ${[["users", "Người dùng"], ["groups", "Nhóm"], ["pmatrix", "Ma trận thư mục × nhóm"], ["folders", "Thư mục & tài liệu"], ["sites", "Site & RAC"]].map(([k, l]) => `<button role="tab" data-t="${k}" class="${PERM_TAB === k ? "active" : ""}">${l}</button>`).join("")}</div>
       <button class="btn" id="restore">${icon("refresh")} Khôi phục bản gốc</button></div>
     <div id="perm-body"><div class="card empty">Đang tải…</div></div>`;
   $$(".subtabs button", page).forEach((b) => b.onclick = () => { PERM_TAB = b.dataset.t; pagePerms(page); });
-  $("#restore").onclick = () => modal({ title: "Khôi phục phân quyền gốc?", body: "<p>Mọi thay đổi người dùng, nhóm, quyền thư mục/tài liệu và AI_Use sẽ quay về như lúc sinh dữ liệu. Nhật ký vẫn giữ.</p>",
-    actions: [{ label: "Hủy" }, { label: "Khôi phục", primary: true, onClick: async () => { await post("/api/admin/restore", {}); toast("Đã khôi phục bản gốc"); await loadDir(); pagePerms(page); } }] });
-  await loadDir();
-  ({ users: permUsers, groups: permGroups, folders: permFolders, sites: permSites })[PERM_TAB]($("#perm-body"));
+  $("#restore").onclick = () => confirmDo({ title: "Khôi phục phân quyền gốc?", label: "Khôi phục bản gốc", lines: [
+    "Mọi thay đổi <b>người dùng, nhóm, quyền thư mục/tài liệu và AI_Use</b> sẽ quay về như lúc sinh dữ liệu.",
+    "Người được mời thêm, nhóm đã đổi và quyền riêng đã cấp sẽ mất.", "Nhật ký vẫn được giữ nguyên." ],
+    onOk: async () => { await post("/api/admin/restore", {}).catch((e) => { toast(e.message, "bad"); throw e; }); toast("Đã khôi phục bản gốc"); await loadDir(); pagePerms(page); } });
+  try { await loadDir(); } catch (e) { $("#perm-body").innerHTML = `<div class="card empty">${esc(e.message)}</div>`; return; }
+  ({ users: permUsers, groups: permGroups, pmatrix: permMatrix, folders: permFolders, sites: permSites })[PERM_TAB]($("#perm-body"));
+}
+
+// ---- matrix: folders (rows) x groups (columns), read / no access, inherited vs unique
+async function permMatrix(el) {
+  el.innerHTML = '<div class="card empty">Đang tải ma trận…</div>';
+  let trees;
+  try { trees = await Promise.all(DIR.sites.map((s) => api("/api/admin/tree/" + s.id))); }
+  catch (e) { el.innerHTML = `<div class="card empty">${esc(e.message)}</div>`; return; }
+  if (!MX_SITE || !DIR.sites.some((s) => s.id === MX_SITE)) MX_SITE = "";
+  const draw = () => {
+    const q = MX_Q.trim().toLowerCase();
+    // rows = folders cut at depth MX_DEPTH (0 = every folder that holds files); a parent row aggregates the folders under it
+    const map = new Map();
+    DIR.sites.forEach((s, i) => {
+      if (MX_SITE && s.id !== MX_SITE) return;
+      trees[i].folders.forEach((f) => {
+        if (q && !f.path.toLowerCase().includes(q)) return;
+        if (MX_UNIQUE && !f.unique) return;
+        const seg = f.path.split("/"), key = MX_DEPTH ? seg.slice(0, MX_DEPTH).join("/") : f.path, id = s.id + "\u0000" + key;
+        if (!map.has(id)) map.set(id, { s, key, leaves: [] });
+        map.get(id).leaves.push(f);
+      });
+    });
+    const all = [...map.values()].sort((x, y) => x.key.localeCompare(y.key, "vi", { numeric: true }));
+    const rows = all.slice(0, MX_CAP), multi = DIR.sites.length > 1;
+    const cell = (r, g) => {
+      const n = r.leaves.filter((f) => f.grants.some((x) => x.kind === "group" && x.id === g.id)).length, tot = r.leaves.length;
+      const nm = esc(gname(g.id));
+      if (n && r.s.rac && !r.s.groups.includes(g.id)) return `<span class="mx-badge rac" title="${nm}: có quyền thư mục nhưng không thuộc nhóm RAC của site, nên bị chặn">${icon("lock")} RAC</span>`;
+      if (n === tot) return `<span class="mx-badge ok" title="${nm}: đọc được${tot > 1 ? " mọi thư mục con (" + tot + ")" : ""}">${icon("check")} Đọc</span>`;
+      if (n) return `<span class="mx-badge part" title="${nm}: đọc được ${n}/${tot} thư mục con">${n}/${tot}</span>`;
+      return `<span class="mx-badge no" title="${nm}: không có quyền">—</span>`;
+    };
+    el.innerHTML = `<div class="toolbar">
+        <div class="search">${icon("search")}<input class="input" id="mx-q" placeholder="Lọc thư mục…" value="${esc(MX_Q)}" aria-label="Lọc thư mục"></div>
+        ${multi ? `<select class="input" id="mx-site" aria-label="Site" style="max-width:220px"><option value="">Tất cả site</option>${DIR.sites.map((s) => `<option value="${esc(s.id)}" ${s.id === MX_SITE ? "selected" : ""}>${esc(s.name)}</option>`).join("")}</select>` : ""}
+        <select class="input" id="mx-depth" aria-label="Cấp thư mục" style="max-width:190px">${[[1, "Thư mục cấp 1 (01–07)"], [2, "Tới cấp 2"], [3, "Tới cấp 3"], [0, "Từng thư mục chứa file"]].map(([v, l]) => `<option value="${v}" ${MX_DEPTH === v ? "selected" : ""}>${l}</option>`).join("")}</select>
+        <label class="mx-check"><input type="checkbox" id="mx-uniq" ${MX_UNIQUE ? "checked" : ""}> Chỉ quyền riêng</label>
+        <span style="flex:1"></span><span class="muted small">${all.length > rows.length ? `Hiển thị ${rows.length}/${all.length} dòng — lọc để thu hẹp` : `${all.length} dòng`}</span></div>
+      <div class="mx-legend"><span class="mx-badge ok">${icon("check")} Đọc</span> nhóm đọc được
+        <span class="mx-badge part">2/3</span> chỉ một phần thư mục con
+        <span class="mx-badge no">—</span> không có quyền
+        <span class="mx-badge rac">${icon("lock")} RAC</span> có quyền nhưng nhóm không thuộc site (RAC chặn)
+        <span class="chip warn">riêng</span> có thư mục đã tách kế thừa · <span class="chip">kế thừa</span> toàn bộ theo cấp trên. Bấm một dòng để sửa quyền.</div>
+      ${rows.length ? `<div class="card tw-scroll"><table class="t mx-perm"><thead><tr><th>Thư mục</th>${DIR.groups.map((g) => `<th class="c" title="${esc(gname(g.id))}"><b>${esc(gshort(g.id))}</b><div class="mx-gn">${esc(gname(g.id))}</div></th>`).join("")}<th class="c">Người dùng riêng</th></tr></thead><tbody>
+        ${rows.map((r, k) => { const uq = r.leaves.filter((f) => f.unique).length, users = new Set(r.leaves.flatMap((f) => f.grants.filter((x) => x.kind === "user").map((x) => x.id)));
+          return `<tr class="click" data-k="${k}"><td><div class="mx-folder">${icon("folder")}<span title="${esc(r.key)}">${esc(r.key)}</span>
+            ${uq ? `<span class="chip warn">riêng${r.leaves.length > 1 ? " " + uq + "/" + r.leaves.length : ""}</span>` : '<span class="chip">kế thừa</span>'}
+            ${r.leaves.length > 1 ? `<span class="muted small">${r.leaves.length} thư mục con</span>` : ""}${multi ? `<span class="muted small">${esc(r.s.name)}</span>` : ""}</div></td>
+          ${DIR.groups.map((g) => `<td class="c ${uq ? "uq" : ""}">${cell(r, g)}</td>`).join("")}
+          <td class="c">${users.size ? `<span class="chip info" title="${[...users].map((x) => esc(uname(x))).join(", ")}">+${users.size}</span>` : '<span class="muted">—</span>'}</td></tr>`; }).join("")}
+        </tbody></table></div>` : '<div class="card empty">Không có thư mục nào khớp bộ lọc.</div>'}`;
+    $("#mx-q").oninput = (e) => { MX_Q = e.target.value; const p = e.target.selectionStart; draw(); const n = $("#mx-q"); n.focus(); n.setSelectionRange(p, p); };
+    $("#mx-site")?.addEventListener("change", (e) => { MX_SITE = e.target.value; draw(); });
+    $("#mx-depth").onchange = (e) => { MX_DEPTH = +e.target.value; draw(); };
+    $("#mx-uniq").onchange = (e) => { MX_UNIQUE = e.target.checked; draw(); };
+    $$("tr[data-k]", el).forEach((tr) => tr.onclick = () => {
+      const r = rows[+tr.dataset.k];
+      PERM_SITE = r.s.id; PERM_FOLDER = (r.leaves.find((f) => f.unique) || r.leaves[0]).path; PERM_TAB = "folders"; pagePerms($("#page"));
+    });
+  };
+  draw();
 }
 
 function permUsers(el) {
-  const rows = DIR.users.filter((u) => !USER_Q || (u.name + u.email + u.org).toLowerCase().includes(USER_Q.toLowerCase()));
-  el.innerHTML = `<div class="toolbar"><div class="search">${icon("search")}<input class="input" id="uq" placeholder="Tìm người dùng…" value="${esc(USER_Q)}"></div>
-    <span class="muted small">${DIR.users.length} tài khoản · ${DIR.users.filter((u) => u.type === "guest").length} khách B2B</span><span style="flex:1"></span>
+  const ql = USER_Q.trim().toLowerCase();
+  const rows = DIR.users.filter((u) => (!ql || (u.name + u.email + u.org).toLowerCase().includes(ql))
+    && (!USER_TYPE || (USER_TYPE === "off" ? !u.enabled : u.type === USER_TYPE)) && (!USER_GROUP || u.groups.includes(USER_GROUP)));
+  el.innerHTML = `<div class="toolbar"><div class="search">${icon("search")}<input class="input" id="uq" placeholder="Tìm tên, email, tổ chức…" value="${esc(USER_Q)}" aria-label="Tìm người dùng"></div>
+    <select class="input" id="ut" aria-label="Lọc theo loại" style="max-width:170px"><option value="">Mọi loại</option><option value="guest" ${USER_TYPE === "guest" ? "selected" : ""}>Khách B2B</option><option value="member" ${USER_TYPE === "member" ? "selected" : ""}>Nhân viên</option><option value="off" ${USER_TYPE === "off" ? "selected" : ""}>Đã tắt</option></select>
+    <select class="input" id="ug" aria-label="Lọc theo nhóm" style="max-width:200px"><option value="">Mọi nhóm</option>${DIR.groups.map((g) => `<option value="${esc(g.id)}" ${USER_GROUP === g.id ? "selected" : ""}>${esc(gshort(g.id) + " — " + gname(g.id))}</option>`).join("")}</select>
+    <span class="muted small">${rows.length}/${DIR.users.length} tài khoản · ${DIR.users.filter((u) => u.type === "guest").length} khách B2B · ${DIR.users.filter((u) => !u.enabled).length} đã tắt</span><span style="flex:1"></span>
     <button class="btn primary" id="invite">${icon("plus")} Mời người dùng</button></div>
-  <div class="card table-wrap"><table class="t"><thead><tr><th>Người dùng</th><th>Loại</th><th>Nhóm (quyền SharePoint)</th><th>Vai trò AI</th><th>Hoạt động</th></tr></thead><tbody>
-  ${rows.map((u) => `<tr data-oid="${u.oid}">
+  ${rows.length ? `<div class="card tw-scroll"><table class="t"><thead><tr><th>Người dùng</th><th>Loại</th><th>Nhóm (quyền SharePoint)</th><th>Vai trò AI</th><th>Hoạt động</th></tr></thead><tbody>
+  ${rows.map((u) => `<tr data-oid="${esc(u.oid)}" class="${u.enabled ? "" : "row-off"}">
     <td><div class="u-cell">${avatar(u.name)}<div class="who"><b>${esc(u.name)}</b><br><small>${esc(u.email)} · ${esc(u.org)}</small>
       ${DIR.deny_list[u.oid] ? `<br><span class="chip bad">Danh sách chặn: ${esc(DIR.deny_list[u.oid])}</span>` : ""}
       ${DIR.revocations.filter((r) => r.oid === u.oid).map((r) => `<br><span class="chip warn">Đang thu hồi: ${esc(gname(r.group))}</span>`).join("")}</div></div></td>
     <td><span class="chip">${u.type === "guest" ? "Khách B2B" : "Nhân viên"}</span></td>
-    <td><div class="chips">${u.groups.map((g) => `<span class="chip brand">${esc(gname(g))}<button data-rm-group="${g}" aria-label="Gỡ khỏi ${esc(gname(g))}">${icon("x")}</button></span>`).join("")}
-      <select class="input" data-add-group style="height:26px;width:auto;font-size:12px;padding:0 4px"><option value="">+ Thêm nhóm</option>${DIR.groups.filter((g) => !u.groups.includes(g.id)).map((g) => `<option value="${g.id}">${esc(gname(g.id))}</option>`).join("")}</select></div></td>
-    <td><div class="chips">${DIR.roles.map((r) => `<button class="chip ${u.roles.includes(r) ? "info" : ""}" data-role="${r}" aria-pressed="${u.roles.includes(r)}" title="Bật/tắt ${ROLE_LABEL[r]}" style="border:0;cursor:pointer">${u.roles.includes(r) ? icon("check") : ""}${ROLE_LABEL[r] || r}</button>`).join("")}</div></td>
-    <td><button class="switch" role="switch" aria-checked="${u.enabled}" data-enabled aria-label="Bật/tắt tài khoản"></button></td></tr>`).join("")}
-  </tbody></table></div>`;
+    <td><div class="chips">${u.groups.map((g) => `<span class="chip brand" title="${esc(gname(g))}">${esc(gname(g))}<button data-rm-group="${esc(g)}" aria-label="Gỡ khỏi ${esc(gname(g))}">${icon("x")}</button></span>`).join("")}
+      <select class="input" data-add-group aria-label="Thêm nhóm" style="height:26px;width:auto;font-size:12px;padding:0 4px"><option value="">+ Thêm nhóm</option>${DIR.groups.filter((g) => !u.groups.includes(g.id)).map((g) => `<option value="${esc(g.id)}">${esc(gname(g.id))}</option>`).join("")}</select></div></td>
+    <td><div class="chips">${DIR.roles.map((r) => `<button class="chip ${u.roles.includes(r) ? "info" : ""}" data-role="${esc(r)}" aria-pressed="${u.roles.includes(r)}" title="Bật/tắt ${esc(ROLE_LABEL[r] || r)}" style="border:0;cursor:pointer">${u.roles.includes(r) ? icon("check") : ""}${esc(ROLE_LABEL[r] || r)}</button>`).join("")}</div></td>
+    <td><div class="sw-cell"><button class="switch" role="switch" aria-checked="${u.enabled}" data-enabled aria-label="Bật/tắt tài khoản ${esc(u.name)}"></button><span class="small ${u.enabled ? "muted" : ""}" style="${u.enabled ? "" : "color:var(--bad)"}">${u.enabled ? "Đang bật" : "Đã tắt"}</span></div></td></tr>`).join("")}
+  </tbody></table></div>` : `<div class="card empty rv-empty">${icon("users")}<b>Không có tài khoản nào khớp bộ lọc.</b></div>`}`;
   $("#uq").oninput = (e) => { USER_Q = e.target.value; const pos = e.target.selectionStart; permUsers(el); const n = $("#uq"); n.focus(); n.setSelectionRange(pos, pos); };
+  $("#ut").onchange = (e) => { USER_TYPE = e.target.value; permUsers(el); };
+  $("#ug").onchange = (e) => { USER_GROUP = e.target.value; permUsers(el); };
   $("#invite").onclick = inviteModal;
   $$("tr[data-oid]", el).forEach((tr) => {
     const oid = tr.dataset.oid, u = DIR.users.find((x) => x.oid === oid);
-    $$("[data-rm-group]", tr).forEach((b) => b.onclick = async () => { await change(`/api/admin/groups/${b.dataset.rmGroup}/members`, { oid, add: false }, `Đã gỡ ${u.name} khỏi ${gname(b.dataset.rmGroup)}`); permUsers(el); });
-    $("[data-add-group]", tr).onchange = async (e) => { if (!e.target.value) return; await change(`/api/admin/groups/${e.target.value}/members`, { oid, add: true }, `Đã thêm ${u.name} vào ${gname(e.target.value)}`); permUsers(el); };
-    $$("[data-role]", tr).forEach((b) => b.onclick = async () => {
-      const r = b.dataset.role, roles = u.roles.includes(r) ? u.roles.filter((x) => x !== r) : [...u.roles, r];
-      await change(`/api/admin/users/${oid}/roles`, { roles }, `Đã cập nhật vai trò của ${u.name}`); permUsers(el);
+    $$("[data-rm-group]", tr).forEach((b) => b.onclick = () => {
+      const g = b.dataset.rmGroup;
+      confirmDo({ title: "Gỡ khỏi nhóm?", label: "Gỡ khỏi nhóm", lines: [
+        `Gỡ <b>${esc(u.name)}</b> khỏi nhóm <b>${esc(gname(g))}</b>.`,
+        `Người này mất quyền đọc mọi thư mục/tài liệu cấp cho nhóm này. ${SP_NOTE}` ],
+        onOk: async () => { await change(`/api/admin/groups/${g}/members`, { oid, add: false }, `Đã gỡ ${u.name} khỏi ${gname(g)}`); permUsers(el); } });
     });
-    $("[data-enabled]", tr).onclick = async () => { await change(`/api/admin/users/${oid}/enabled`, { enabled: !u.enabled }, `${u.enabled ? "Đã tắt" : "Đã bật"} tài khoản ${u.name}`); permUsers(el); };
+    $("[data-add-group]", tr).onchange = async (e) => { if (!e.target.value) return; try { await change(`/api/admin/groups/${e.target.value}/members`, { oid, add: true }, `Đã thêm ${u.name} vào ${gname(e.target.value)}`); } catch {} permUsers(el); };
+    $$("[data-role]", tr).forEach((b) => b.onclick = async () => {
+      const r = b.dataset.role, on = u.roles.includes(r), roles = on ? u.roles.filter((x) => x !== r) : [...u.roles, r];
+      const apply = async () => { await change(`/api/admin/users/${oid}/roles`, { roles }, `Đã cập nhật vai trò của ${u.name}`); permUsers(el); };
+      if (on) confirmDo({ title: "Tắt vai trò AI?", label: "Tắt vai trò", lines: [`Tắt vai trò <b>${esc(ROLE_LABEL[r] || r)}</b> của <b>${esc(u.name)}</b>.`, "Tính năng tương ứng bị chặn ở lần hỏi kế tiếp."], onOk: apply });
+      else { try { await apply(); } catch {} }
+    });
+    $("[data-enabled]", tr).onclick = async () => {
+      const apply = async () => { await change(`/api/admin/users/${oid}/enabled`, { enabled: !u.enabled }, `${u.enabled ? "Đã tắt" : "Đã bật"} tài khoản ${u.name}`); permUsers(el); };
+      if (u.enabled) confirmDo({ title: "Tắt tài khoản?", label: "Tắt tài khoản", lines: [`Tắt tài khoản của <b>${esc(u.name)}</b> (${esc(u.email)}).`,
+        "Người này không đăng nhập hay hỏi AI được nữa; dữ liệu và nhóm được giữ nguyên. Bật lại bất kỳ lúc nào."], onOk: apply });
+      else { try { await apply(); } catch {} }
+    };
   });
 }
 
@@ -1048,32 +1203,41 @@ function inviteModal() {
     <label class="field">Email<input class="input" id="nu-email" type="email" required></label>
     <label class="field">Tổ chức<input class="input" id="nu-org"></label>
     <label class="field">Loại<select class="input" id="nu-type"><option value="guest">Khách B2B (nhà đầu tư, cố vấn)</option><option value="member">Nhân viên tổ chức phát hành</option></select></label>
-    <div class="field">Nhóm<div class="checks">${DIR.groups.map((g) => `<label><input type="checkbox" value="${g.id}" data-nu-group> ${esc(gname(g.id))}</label>`).join("")}</div></div>
-    <div class="field">Vai trò AI<div class="checks">${DIR.roles.map((r) => `<label><input type="checkbox" value="${r}" data-nu-role> ${ROLE_LABEL[r]}</label>`).join("")}</div></div>
+    <div class="field">Nhóm<div class="checks">${DIR.groups.map((g) => `<label><input type="checkbox" value="${esc(g.id)}" data-nu-group> ${esc(gname(g.id))}</label>`).join("")}</div></div>
+    <div class="field">Vai trò AI<div class="checks">${DIR.roles.map((r) => `<label><input type="checkbox" value="${esc(r)}" data-nu-role> ${esc(ROLE_LABEL[r] || r)}</label>`).join("")}</div></div>
     <label class="field">Mật khẩu tạm (≥ 8 ký tự)<input class="input" id="nu-pw" type="password" autocomplete="new-password"></label>
+    <p class="small" id="nu-err" style="color:var(--bad);min-height:18px;margin:6px 0"></p>
     <div class="alert info small">Thêm vào nhóm có hiệu lực ở AI ngay sau đồng bộ, còn SharePoint giả lập áp sau độ trễ (mặc định 60 giây).</div>`,
   actions: [{ label: "Hủy" }, { label: "Mời", primary: true, onClick: async (ov) => {
+    const err = (m) => { $("#nu-err", ov).textContent = m; return false; };
+    const name = $("#nu-name", ov).value.trim(), email = $("#nu-email", ov).value.trim(), pw = $("#nu-pw", ov).value;
+    if (!name) return err("Vui lòng nhập họ tên.");
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return err("Email không hợp lệ.");
+    if (pw.length < 8) return err("Mật khẩu tạm cần tối thiểu 8 ký tự.");
     try {
       await change("/api/admin/users", {
-        name: $("#nu-name", ov).value, email: $("#nu-email", ov).value, org: $("#nu-org", ov).value, type: $("#nu-type", ov).value,
-        groups: $$("[data-nu-group]:checked", ov).map((x) => x.value), roles: $$("[data-nu-role]:checked", ov).map((x) => x.value), password: $("#nu-pw", ov).value,
+        name, email, org: $("#nu-org", ov).value, type: $("#nu-type", ov).value,
+        groups: $$("[data-nu-group]:checked", ov).map((x) => x.value), roles: $$("[data-nu-role]:checked", ov).map((x) => x.value), password: pw,
       }, "Đã mời người dùng mới");
       permUsers($("#perm-body"));
-    } catch { return false; }
+    } catch (e) { return err(e.message); }
   } }] });
 }
 
 function permGroups(el) {
-  el.innerHTML = `<div class="grid-2">${DIR.groups.map((g) => `<div class="card" data-gid="${g.id}">
-    <div class="card-h">${icon("users")}<h3>${esc(gname(g.id))}</h3><span class="chip">${g.id}</span><span style="flex:1"></span><span class="muted small">${g.members.length} thành viên</span></div>
+  el.innerHTML = `<div class="grid-2">${DIR.groups.map((g) => `<div class="card" data-gid="${esc(g.id)}">
+    <div class="card-h">${icon("users")}<h3>${esc(gname(g.id))}</h3><span class="chip">${esc(g.id)}</span><span style="flex:1"></span><span class="muted small">${g.members.length} thành viên</span></div>
     <div class="card-b">${g.members.map((m) => `<div class="grant-row">${avatar(uname(m), 26)}<div class="g">${esc(uname(m))}${DIR.revocations.some((r) => r.oid === m && r.group === g.id) ? ' <span class="chip warn">đang thu hồi</span>' : ""}</div>
-      <button class="btn sm ghost danger" data-rm="${m}">${icon("x")} Gỡ</button></div>`).join("") || '<div class="muted small">Chưa có thành viên</div>'}
-      <div class="inline-form"><select class="input" data-add style="max-width:none;flex:1"><option value="">Chọn người để thêm…</option>${DIR.users.filter((u) => !g.members.includes(u.oid)).map((u) => `<option value="${u.oid}">${esc(u.name)} — ${esc(u.org)}</option>`).join("")}</select>
+      <button class="btn sm ghost danger" data-rm="${esc(m)}" aria-label="Gỡ ${esc(uname(m))} khỏi ${esc(gname(g.id))}">${icon("x")} Gỡ</button></div>`).join("") || '<div class="muted small">Chưa có thành viên</div>'}
+      <div class="inline-form"><select class="input" data-add aria-label="Thêm thành viên" style="max-width:none;flex:1"><option value="">Chọn người để thêm…</option>${DIR.users.filter((u) => !g.members.includes(u.oid)).map((u) => `<option value="${esc(u.oid)}">${esc(u.name)} — ${esc(u.org)}</option>`).join("")}</select>
       <button class="btn primary sm" data-addbtn>${icon("plus")} Thêm</button></div></div></div>`).join("")}</div>`;
   $$("[data-gid]", el).forEach((card) => {
     const gid = card.dataset.gid;
-    $$("[data-rm]", card).forEach((b) => b.onclick = async () => { await change(`/api/admin/groups/${gid}/members`, { oid: b.dataset.rm, add: false }, `Đã gỡ ${uname(b.dataset.rm)} khỏi ${gname(gid)}`); permGroups(el); });
-    $("[data-addbtn]", card).onclick = async () => { const oid = $("[data-add]", card).value; if (!oid) return; await change(`/api/admin/groups/${gid}/members`, { oid, add: true }, `Đã thêm ${uname(oid)} vào ${gname(gid)}`); permGroups(el); };
+    $$("[data-rm]", card).forEach((b) => b.onclick = () => confirmDo({ title: "Gỡ thành viên khỏi nhóm?", label: "Gỡ khỏi nhóm", lines: [
+      `Gỡ <b>${esc(uname(b.dataset.rm))}</b> khỏi nhóm <b>${esc(gname(gid))}</b>.`,
+      `Người này mất quyền đọc mọi thư mục/tài liệu cấp cho nhóm. ${SP_NOTE}` ],
+      onOk: async () => { await change(`/api/admin/groups/${gid}/members`, { oid: b.dataset.rm, add: false }, `Đã gỡ ${uname(b.dataset.rm)} khỏi ${gname(gid)}`); permGroups(el); } }));
+    $("[data-addbtn]", card).onclick = async () => { const oid = $("[data-add]", card).value; if (!oid) return toast("Hãy chọn người cần thêm.", "bad"); try { await change(`/api/admin/groups/${gid}/members`, { oid, add: true }, `Đã thêm ${uname(oid)} vào ${gname(gid)}`); } catch {} permGroups(el); };
   });
 }
 
@@ -1082,49 +1246,64 @@ function grantEditor({ unique, grants, onAdd, onRemove, onInherit, inheritLabel 
       <span style="flex:1"></span>${unique && onInherit ? `<button class="btn sm" data-inherit>${icon("refresh")} ${inheritLabel || "Khôi phục kế thừa"}</button>` : ""}</div>
     ${grants.map((g, i) => `<div class="grant-row"><div class="g">${principal(g)}<div class="muted small">${esc(g.source || "")}</div></div>
       ${g.kind === "user" || g.kind === "group" ? `<button class="btn sm ghost danger" data-rm-grant="${i}">${icon("x")} Gỡ</button>` : ""}</div>`).join("") || '<div class="muted small">Không ai có quyền.</div>'}
-    <div class="inline-form"><select class="input" data-gkind style="width:130px"><option value="group">Nhóm</option><option value="user">Người dùng</option></select>
-      <select class="input" data-gid style="flex:1;max-width:none"></select><button class="btn primary sm" data-grant>${icon("plus")} Cấp quyền</button></div>
+    <div class="inline-form"><select class="input" data-gkind aria-label="Loại đối tượng" style="width:130px"><option value="group">Nhóm</option><option value="user">Người dùng</option></select>
+      <select class="input" data-gid aria-label="Đối tượng" style="flex:1;max-width:none"></select><button class="btn primary sm" data-grant>${icon("plus")} Cấp quyền</button></div>
     <p class="muted small" style="margin:8px 0 0">${icon("info")} Site có RAC: người được cấp còn phải thuộc nhóm RAC của site thì mới mở được (bức tường thứ hai).</p>`;
 }
+// h = { add, remove, inherit, what } ; remove and inherit always go through a confirmation that states what changes.
 function wireGrantEditor(root, grants, h) {
   const kind = $("[data-gkind]", root), sel = $("[data-gid]", root);
   const fill = () => {
-    sel.innerHTML = kind.value === "group" ? DIR.groups.map((g) => `<option value="${g.id}">${esc(gname(g.id))}</option>`).join("")
-      : DIR.users.map((u) => `<option value="${u.oid}">${esc(u.name)} — ${esc(u.org)}</option>`).join("");
+    sel.innerHTML = kind.value === "group" ? DIR.groups.map((g) => `<option value="${esc(g.id)}">${esc(gname(g.id))}</option>`).join("")
+      : DIR.users.map((u) => `<option value="${esc(u.oid)}">${esc(u.name)} — ${esc(u.org)}</option>`).join("");
   };
   kind.onchange = fill; fill();
+  const what = h.what || "mục này";
   $("[data-grant]", root).onclick = () => h.add(kind.value, sel.value);
-  $$("[data-rm-grant]", root).forEach((b) => b.onclick = () => { const g = grants[+b.dataset.rmGrant]; h.remove(g.kind, g.id); });
-  const inh = $("[data-inherit]", root); if (inh) inh.onclick = h.inherit;
+  $$("[data-rm-grant]", root).forEach((b) => b.onclick = () => {
+    const g = grants[+b.dataset.rmGrant], who = g.kind === "group" ? gname(g.id) : uname(g.id);
+    confirmDo({ title: "Gỡ quyền?", label: "Gỡ quyền", lines: [`Gỡ quyền đọc <b>${esc(what)}</b> của ${g.kind === "group" ? "nhóm" : "người dùng"} <b>${esc(who)}</b>.`,
+      "Việc gỡ tách quyền riêng khỏi cấp trên (nếu đang kế thừa) và có hiệu lực ở AI ngay." ], onOk: () => h.remove(g.kind, g.id) });
+  });
+  const inh = $("[data-inherit]", root);
+  if (inh) inh.onclick = () => confirmDo({ title: "Khôi phục kế thừa?", label: "Khôi phục kế thừa", lines: [
+    `Xóa <b>toàn bộ quyền riêng</b> của <b>${esc(what)}</b>.`, "Từ giờ quyền lấy theo thư mục/cấp trên; những ai chỉ có quyền riêng sẽ mất quyền truy cập." ], onOk: h.inherit });
 }
 
 async function permFolders(el) {
-  el.innerHTML = `<div class="toolbar">${DIR.sites.map((s) => `<button class="btn ${PERM_SITE === s.id ? "primary" : ""} sm" data-site="${s.id}">${esc(s.name)}</button>`).join("")}</div>
+  if (!DIR.sites.some((s) => s.id === PERM_SITE)) { PERM_SITE = DIR.sites[0]?.id; PERM_FOLDER = null; }
+  el.innerHTML = `<div class="toolbar">${DIR.sites.map((s) => `<button class="btn ${PERM_SITE === s.id ? "primary" : ""} sm" data-site="${esc(s.id)}">${esc(s.name)}</button>`).join("")}</div>
     <div class="grid-side"><div class="card"><div class="card-h"><h3>Thư mục</h3></div><div class="list" id="flist" style="padding:6px"></div></div><div id="fdetail"></div></div>`;
   $$("[data-site]", el).forEach((b) => b.onclick = () => { PERM_SITE = b.dataset.site; PERM_FOLDER = null; permFolders(el); });
-  const tree = await api("/api/admin/tree/" + PERM_SITE);
+  let tree;
+  try { tree = await api("/api/admin/tree/" + PERM_SITE); } catch (e) { $("#fdetail").innerHTML = `<div class="card empty">${esc(e.message)}</div>`; return; }
   if (!PERM_FOLDER || !tree.folders.some((f) => f.path === PERM_FOLDER)) PERM_FOLDER = tree.folders[0]?.path;
-  $("#flist").innerHTML = tree.folders.map((f) => `<button class="${f.path === PERM_FOLDER ? "active" : ""}" data-f="${esc(f.path)}">${icon("folder")}<span style="flex:1">${esc(f.path)}</span>${f.unique ? '<span class="chip warn">riêng</span>' : ""}<span class="muted small">${f.files.length}</span></button>`).join("");
+  $("#flist").innerHTML = tree.folders.map((f) => `<button class="${f.path === PERM_FOLDER ? "active" : ""}" data-f="${esc(f.path)}">${icon("folder")}<span style="flex:1">${esc(f.path)}</span>${f.unique ? '<span class="chip warn">riêng</span>' : ""}<span class="muted small">${f.files.length}</span></button>`).join("") || '<div class="empty">Site trống</div>';
   $$("#flist button").forEach((b) => b.onclick = () => { PERM_FOLDER = b.dataset.f; permFolders(el); });
   const f = tree.folders.find((x) => x.path === PERM_FOLDER);
   if (!f) { $("#fdetail").innerHTML = '<div class="card empty">Site trống</div>'; return; }
   const ST = { indexed: ["Đã lập chỉ mục", "ok"], skipped: ["Bỏ qua", "warn"], error: ["Lỗi", "bad"], pending: ["Chờ nạp", "info"] };
   $("#fdetail").innerHTML = `<div class="card" style="margin-bottom:16px"><div class="card-h">${icon("key")}<h3>Quyền thư mục: ${esc(f.path)}</h3></div><div class="card-b" id="fgrants">${grantEditor({ unique: f.unique, grants: f.grants, onInherit: true })}</div></div>
-    <div class="card table-wrap"><table class="t"><thead><tr><th>Tài liệu</th><th>AI_Use</th><th>Quyền</th><th>Trạng thái nạp</th><th></th></tr></thead><tbody>
-    ${f.files.map((x) => `<tr data-item="${x.item_id}"><td><div style="display:flex;gap:8px;align-items:center;min-width:260px">${ftype(x.ext)}<span>${esc(x.name)}</span>
+    <div class="card tw-scroll"><table class="t"><thead><tr><th>Tài liệu</th><th>AI_Use</th><th>Quyền</th><th>Trạng thái nạp</th><th></th></tr></thead><tbody>
+    ${f.files.map((x) => `<tr data-item="${esc(x.item_id)}"><td><div style="display:flex;gap:8px;align-items:center;min-width:260px">${ftype(x.ext)}<span>${esc(x.name)}</span>
         ${x.encrypted ? '<span class="chip bad">mã hóa</span>' : ""}${x.malware ? '<span class="chip bad">mã độc</span>' : ""}</div></td>
-      <td><select class="input" data-aiuse style="height:30px;width:130px">${DIR.ai_use.map((v) => `<option ${v === x.ai_use ? "selected" : ""}>${v}</option>`).join("")}</select></td>
+      <td><select class="input" data-aiuse aria-label="AI_Use" style="height:30px;width:130px">${DIR.ai_use.map((v) => `<option ${v === x.ai_use ? "selected" : ""}>${esc(v)}</option>`).join("")}</select></td>
       <td>${x.unique ? '<span class="chip warn">riêng</span>' : '<span class="chip">kế thừa</span>'}${x.grants.some((g) => g.kind.startsWith("link_")) ? ' <span class="chip info">có link</span>' : ""}</td>
       <td>${(([l, c]) => `<span class="chip ${c}">${l}</span>`)(ST[x.status] || [x.status, ""])} <span class="muted small">${x.chunks || 0} đoạn</span></td>
-      <td><button class="btn sm" data-iperm>${icon("key")} Quyền</button></td></tr>`).join("")}</tbody></table></div>`;
+      <td><button class="btn sm" data-iperm>${icon("key")} Quyền</button></td></tr>`).join("") || '<tr><td colspan="5" class="empty">Thư mục không có tài liệu.</td></tr>'}</tbody></table></div>`;
   wireGrantEditor($("#fgrants"), f.grants, {
-    add: async (kind, id) => { await change("/api/admin/grants", { target: "folder", site: PERM_SITE, key: f.path, kind, id, add: true }, `Đã cấp quyền thư mục cho ${kind === "group" ? gname(id) : uname(id)}`); permFolders(el); },
+    what: "thư mục " + f.path,
+    add: async (kind, id) => { try { await change("/api/admin/grants", { target: "folder", site: PERM_SITE, key: f.path, kind, id, add: true }, `Đã cấp quyền thư mục cho ${kind === "group" ? gname(id) : uname(id)}`); } catch {} permFolders(el); },
     remove: async (kind, id) => { await change("/api/admin/grants", { target: "folder", site: PERM_SITE, key: f.path, kind, id, add: false }, `Đã gỡ quyền thư mục của ${kind === "group" ? gname(id) : uname(id)}`); permFolders(el); },
     inherit: async () => { await change("/api/admin/grants/inherit", { target: "folder", site: PERM_SITE, key: f.path }, "Đã khôi phục kế thừa cho thư mục"); permFolders(el); },
   });
   $$("tr[data-item]", $("#fdetail")).forEach((tr) => {
     const x = f.files.find((y) => y.item_id === tr.dataset.item);
-    $("[data-aiuse]", tr).onchange = async (e) => { await change(`/api/admin/items/${x.item_id}/ai_use`, { value: e.target.value }, `AI_Use = ${e.target.value} cho ${x.name}`); permFolders(el); };
+    $("[data-aiuse]", tr).onchange = async (e) => {
+      const v = e.target.value, apply = async () => { try { await change(`/api/admin/items/${x.item_id}/ai_use`, { value: v }, `AI_Use = ${v} cho ${x.name}`); } catch {} permFolders(el); };
+      if (v === "Excluded" || x.ai_use === "Excluded" || v === "OnPremOnly") confirmDo({ title: "Đổi AI_Use?", label: "Đổi AI_Use", lines: [`Đặt AI_Use của <b>${esc(x.name)}</b> từ <b>${esc(x.ai_use)}</b> thành <b>${esc(v)}</b>.`, "AI sẽ ngừng dùng tài liệu này khi trả lời từ câu hỏi kế tiếp."], onOk: apply });
+      else apply();
+    };
     $("[data-iperm]", tr).onclick = () => itemDrawer(x, el);
   });
 }
@@ -1132,21 +1311,27 @@ async function permFolders(el) {
 function itemDrawer(x, el) {
   const body = drawer(x.name, `<div class="muted small" style="margin-bottom:10px">${esc(x.item_id)} · ${esc(x.label || "không nhãn")}</div>` + grantEditor({ unique: x.unique, grants: x.grants, onInherit: true }));
   wireGrantEditor(body, x.grants, {
-    add: async (kind, id) => { await change("/api/admin/grants", { target: "item", site: PERM_SITE, key: x.item_id, kind, id, add: true }, "Đã cấp quyền tài liệu"); $(".drawer-ov")?.click(); permFolders(el); },
+    what: "tài liệu " + x.name,
+    add: async (kind, id) => { try { await change("/api/admin/grants", { target: "item", site: PERM_SITE, key: x.item_id, kind, id, add: true }, "Đã cấp quyền tài liệu"); } catch { return; } $(".drawer-ov")?.click(); permFolders(el); },
     remove: async (kind, id) => { await change("/api/admin/grants", { target: "item", site: PERM_SITE, key: x.item_id, kind, id, add: false }, "Đã gỡ quyền tài liệu"); $(".drawer-ov")?.click(); permFolders(el); },
     inherit: async () => { await change("/api/admin/grants/inherit", { target: "item", site: PERM_SITE, key: x.item_id }, "Đã khôi phục kế thừa"); $(".drawer-ov")?.click(); permFolders(el); },
   });
 }
 
 function permSites(el) {
-  el.innerHTML = `<div class="grid-2">${DIR.sites.map((s) => `<div class="card" data-site="${s.id}">
-    <div class="card-h">${icon("globe")}<h3>${esc(s.name)}</h3><span class="chip">${s.id}</span><span style="flex:1"></span>${s.rac ? '<span class="chip ok">RAC bật</span>' : '<span class="chip">RAC tắt</span>'}</div>
+  el.innerHTML = `<div class="grid-2">${DIR.sites.map((s) => `<div class="card" data-site="${esc(s.id)}">
+    <div class="card-h">${icon("globe")}<h3>${esc(s.name)}</h3><span class="chip">${esc(s.id)}</span><span style="flex:1"></span>${s.rac ? '<span class="chip ok">RAC bật</span>' : '<span class="chip">RAC tắt</span>'}</div>
     <div class="card-b"><p class="muted small" style="margin-top:0">Nhóm có quyền đọc site. Khi RAC bật, đây cũng là bức tường thứ hai: ai không thuộc các nhóm này không mở được gì trong site, kể cả khi có link hoặc quyền riêng.</p>
-      <div class="checks">${DIR.groups.map((g) => `<label><input type="checkbox" value="${g.id}" ${s.groups.includes(g.id) ? "checked" : ""}> ${esc(gname(g.id))}</label>`).join("")}</div>
+      <div class="checks">${DIR.groups.map((g) => `<label><input type="checkbox" value="${esc(g.id)}" ${s.groups.includes(g.id) ? "checked" : ""}> ${esc(gname(g.id))}</label>`).join("")}</div>
       <div class="inline-form"><button class="btn primary sm" data-save>${icon("check")} Lưu nhóm của site</button></div></div></div>`).join("")}</div>`;
   $$("[data-site]", el).forEach((card) => $("[data-save]", card).onclick = async () => {
-    const groups = $$("input:checked", card).map((x) => x.value);
-    await change(`/api/admin/sites/${card.dataset.site}/groups`, { groups }, "Đã lưu nhóm của site"); permSites(el);
+    const s = DIR.sites.find((x) => x.id === card.dataset.site), groups = $$("input:checked", card).map((x) => x.value);
+    const removed = s.groups.filter((g) => !groups.includes(g)), added = groups.filter((g) => !s.groups.includes(g));
+    if (!removed.length && !added.length) return toast("Chưa có thay đổi nào để lưu.");
+    const apply = async () => { await change(`/api/admin/sites/${s.id}/groups`, { groups }, "Đã lưu nhóm của site"); permSites(el); };
+    const lines = [...added.map((g) => `Thêm nhóm <b>${esc(gname(g))}</b> vào site ${esc(s.name)}.`), ...removed.map((g) => `Bỏ nhóm <b>${esc(gname(g))}</b> khỏi site ${esc(s.name)}: nhóm này không còn đọc được gì trong site${s.rac ? " (RAC bật, kể cả khi có link hoặc quyền riêng)" : ""}.`)];
+    if (removed.length) confirmDo({ title: "Lưu nhóm của site?", label: "Lưu thay đổi", lines, onOk: apply });
+    else { try { await apply(); } catch {} }
   });
 }
 
@@ -1191,13 +1376,19 @@ async function pageScenarios(page) {
     <div class="row">${(s.f || []).map(sel).join("")}<button class="btn primary sm">${icon("play")} Chạy</button></div></div>`).join("")}</div>
     <div><div class="card" style="margin-bottom:16px"><div class="card-h"><h3>Kết quả</h3></div><div class="card-b" id="scen-result"><p class="muted" style="margin:0">Chọn một kịch bản để chạy.</p></div></div>
     <div class="card"><div class="card-h"><h3>Trạng thái trực tiếp</h3><span style="flex:1"></span><span class="spinner"></span></div><div class="card-b" id="live"></div></div></div></div>`;
-  $$(".scen", page).forEach((card) => $("button", card).onclick = async () => {
+  const DESTRUCTIVE = { reset: "Nạp lại tenant gốc: mọi thay đổi người dùng, nhóm, quyền và AI_Use sẽ mất.", offboard: "Người được chọn bị offboard: tài khoản bị chặn.",
+    pause_entra_feed: "Sau khoảng 30 giây mọi câu hỏi của mọi người bị từ chối (đóng an toàn).", corrupt_mirror: "Tiêm lỗi vào bản chép quyền của tenant." };
+  $$(".scen", page).forEach((card) => $("button", card).onclick = () => {
     const params = {}; $$("[data-p]", card).forEach((s) => params[s.dataset.p] = s.value);
+    const run = async () => {
     try {
       const r = await post("/api/scenario/" + card.dataset.name, { params });
       $("#scen-result").innerHTML = `<h4 style="margin:0 0 6px">${esc(r.title)}</h4><p style="margin:0 0 8px">${esc(r.explain)}</p>${r.try ? `<div class="alert info">${icon("info")} Thử: ${esc(r.try)}</div>` : ""}`;
       toast("Đã chạy: " + r.title); loadDir(); pollStatus();
     } catch (e) { toast(e.message, "bad"); }
+    };
+    if (DESTRUCTIVE[card.dataset.name]) confirmDo({ title: "Chạy kịch bản này?", label: "Chạy kịch bản", lines: [DESTRUCTIVE[card.dataset.name]], onOk: run });
+    else run();
   });
   renderLive();
 }
@@ -1214,18 +1405,67 @@ function renderLive() {
 }
 
 // ------------------------------------------------------------------ audit
+let AUD = { kind: "", who: "", q: "", limit: 200 };
+const AUD_KIND = { answer: ["Trả lời", "ok"], refusal: ["Từ chối", "warn"], sign_in: ["Đăng nhập", "info"], permission_change: ["Đổi quyền", "brand"], scenario: ["Kịch bản", ""],
+  feedback: ["Đánh giá", ""], file_link: ["Mở link file", ""], file_view: ["Xem file", ""], rate_limited: ["Giới hạn tốc độ", "warn"] };
+// one readable "action" + "target" per audit row; the raw payload stays available under "Chi tiết"
+function auditSummary(r) {
+  const p = r.payload || {};
+  if (r.kind === "permission_change") {
+    const g = (id) => id ? gname(id) : "", u = (id) => id ? uname(id) : "";
+    const A = {
+      user_enabled: [p.enabled ? "Bật tài khoản" : "Tắt tài khoản", u(p.oid)],
+      user_roles: ["Đổi vai trò AI", `${u(p.oid)}: ${(p.roles || []).map((x) => ROLE_LABEL[x] || x).join(", ") || "không có vai trò"}`],
+      group_member: [p.add ? "Thêm vào nhóm" : "Gỡ khỏi nhóm", `${u(p.oid)} ${p.add ? "→" : "←"} ${g(p.group)}`],
+      user_created: ["Mời người dùng", `${p.email || u(p.oid)}${(p.groups || []).length ? " · " + p.groups.map(g).join(", ") : ""}`],
+      grant: [p.add ? "Cấp quyền" : "Gỡ quyền", `${p.kind === "group" ? g(p.id) : u(p.id)} · ${p.target === "item" ? "tài liệu" : "thư mục"} ${p.key || ""}`],
+      restore_inheritance: ["Khôi phục kế thừa", `${p.target === "item" ? "tài liệu" : "thư mục"} ${p.key || ""}`],
+      site_groups: ["Đổi nhóm của site", `${p.site}: ${(p.groups || []).map(g).join(", ") || "không nhóm"}`],
+      ai_use: ["Đổi AI_Use", `${p.item_id || ""} = ${p.value || ""}`],
+    };
+    return A[p.action] || [p.action || "Đổi quyền", ""];
+  }
+  if (r.kind === "scenario") return ["Chạy kịch bản", p.title || p.name || ""];
+  if (r.kind === "sign_in") return ["Đăng nhập", p.email || ""];
+  const t = ["question", "query", "reason", "message", "title", "item_id", "email"].map((k) => p[k]).find((v) => typeof v === "string" && v);
+  return [(AUD_KIND[r.kind] || [r.kind])[0], t ? (t.length > 140 ? t.slice(0, 140) + "…" : t) : ""];
+}
+const auditWho = (r) => r.oid === "admin" ? "Quản trị" : (r.oid ? uname(r.oid) : "Hệ thống");
+
 async function pageAudit(page) {
-  page.innerHTML = `<div class="toolbar"><button class="btn primary" id="verify">${icon("shield")} Kiểm tra chuỗi hash</button><span id="vout"></span><span style="flex:1"></span><button class="btn" id="reload">${icon("refresh")} Tải lại</button></div><div id="alist"><div class="card empty">Đang tải…</div></div>`;
-  const KIND = { answer: ["Trả lời", "ok"], refusal: ["Từ chối", "warn"], sign_in: ["Đăng nhập", "info"], permission_change: ["Đổi quyền", "brand"], scenario: ["Kịch bản", ""] };
-  const load = async () => {
-    const rows = await api("/api/audit?limit=80");
-    $("#alist").innerHTML = `<div class="card table-wrap"><table class="t"><thead><tr><th>#</th><th>Thời điểm</th><th>Người</th><th>Loại</th><th>Nội dung</th><th>Hash</th></tr></thead><tbody>${rows.map((r) => {
-      const [l, c] = KIND[r.kind] || [r.kind, ""];
-      return `<tr><td>${r.seq}</td><td style="white-space:nowrap">${new Date(r.ts).toLocaleString()}</td><td>${esc(r.oid === "admin" ? "Quản trị" : uname(r.oid || ""))}</td><td><span class="chip ${c}">${l}</span></td>
-        <td style="max-width:520px"><pre class="payload">${esc(JSON.stringify(r.payload, null, 1))}</pre></td><td class="mono muted small">${r.hash}…</td></tr>`;
-    }).join("")}</tbody></table></div>`;
+  page.innerHTML = `<div class="toolbar"><button class="btn primary" id="verify">${icon("shield")} Kiểm tra chuỗi hash</button><span id="vout"></span><span style="flex:1"></span><button class="btn" id="reload">${icon("refresh")} Tải lại</button></div>
+    <div id="afilters"></div><div id="alist"><div class="card empty">Đang tải…</div></div>`;
+  let rows = [];
+  const draw = () => {
+    const kinds = [...new Set(rows.map((r) => r.kind))], whos = [...new Set(rows.map(auditWho))].sort();
+    const q = AUD.q.trim().toLowerCase();
+    const vis = rows.filter((r) => (!AUD.kind || r.kind === AUD.kind) && (!AUD.who || auditWho(r) === AUD.who)
+      && (!q || (auditWho(r) + " " + auditSummary(r).join(" ") + " " + JSON.stringify(r.payload || {})).toLowerCase().includes(q)));
+    $("#afilters").innerHTML = `<div class="toolbar"><div class="search">${icon("search")}<input class="input" id="aq" placeholder="Tìm trong nhật ký…" value="${esc(AUD.q)}" aria-label="Tìm trong nhật ký"></div>
+      <select class="input" id="ak" aria-label="Loại" style="max-width:180px"><option value="">Mọi loại</option>${kinds.map((k) => `<option value="${esc(k)}" ${AUD.kind === k ? "selected" : ""}>${esc((AUD_KIND[k] || [k])[0])}</option>`).join("")}</select>
+      <select class="input" id="aw" aria-label="Người" style="max-width:200px"><option value="">Mọi người</option>${whos.map((w) => `<option value="${esc(w)}" ${AUD.who === w ? "selected" : ""}>${esc(w)}</option>`).join("")}</select>
+      <select class="input" id="al" aria-label="Số dòng" style="max-width:150px">${[80, 200, 500].map((n) => `<option value="${n}" ${AUD.limit === n ? "selected" : ""}>${n} dòng gần nhất</option>`).join("")}</select>
+      <span class="muted small">${vis.length}/${rows.length} dòng</span></div>`;
+    $("#aq").oninput = (e) => { AUD.q = e.target.value; const p = e.target.selectionStart; draw(); const n = $("#aq"); n.focus(); n.setSelectionRange(p, p); };
+    $("#ak").onchange = (e) => { AUD.kind = e.target.value; draw(); };
+    $("#aw").onchange = (e) => { AUD.who = e.target.value; draw(); };
+    $("#al").onchange = (e) => { AUD.limit = +e.target.value; load(); };
+    $("#alist").innerHTML = vis.length ? `<div class="card tw-scroll"><table class="t aud"><thead><tr><th>#</th><th>Thời điểm</th><th>Ai</th><th>Hành động</th><th>Đối tượng</th><th>Hash</th></tr></thead><tbody>${vis.map((r) => {
+      const [l, c] = AUD_KIND[r.kind] || [r.kind, ""], [act, target] = auditSummary(r);
+      return `<tr><td class="muted">${r.seq}</td><td style="white-space:nowrap">${fmtTime(r.ts)}</td><td>${esc(auditWho(r))}</td>
+        <td><span class="chip ${c}">${esc(l)}</span>${r.kind === "permission_change" || r.kind === "scenario" ? ` <b>${esc(act)}</b>` : ""}</td>
+        <td class="aud-t">${esc(target)}<details><summary class="small muted">Chi tiết</summary><pre class="payload">${esc(JSON.stringify(r.payload, null, 1))}</pre></details></td>
+        <td class="mono muted small">${esc(r.hash)}…</td></tr>`;
+    }).join("")}</tbody></table></div>` : `<div class="card empty rv-empty">${icon("list")}<b>Không có dòng nhật ký nào khớp bộ lọc.</b></div>`;
   };
-  $("#verify").onclick = async () => { const v = await api("/api/audit/verify"); $("#vout").innerHTML = v.ok ? `<span class="chip ok">${icon("check")} Chuỗi toàn vẹn · ${v.rows} dòng</span>` : `<span class="chip bad">Phát hiện sửa đổi tại dòng #${v.first_bad_seq}</span>`; };
+  const load = async () => {
+    try { rows = await api("/api/audit?limit=" + AUD.limit); draw(); }
+    catch (e) { $("#alist").innerHTML = `<div class="card empty">${esc(e.message)}</div>`; }
+  };
+  $("#verify").onclick = async () => {
+    try { const v = await api("/api/audit/verify"); $("#vout").innerHTML = v.ok ? `<span class="chip ok">${icon("check")} Chuỗi toàn vẹn · ${v.rows} dòng</span>` : `<span class="chip bad">Phát hiện sửa đổi tại dòng #${v.first_bad_seq}</span>`; }
+    catch (e) { toast(e.message, "bad"); }
+  };
   $("#reload").onclick = load;
   if (!DIR) await loadDir();
   load();
