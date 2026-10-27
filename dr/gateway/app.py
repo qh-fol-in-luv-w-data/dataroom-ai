@@ -11,6 +11,7 @@ import queue
 import threading
 import time
 from contextlib import asynccontextmanager
+from functools import lru_cache
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
@@ -240,7 +241,19 @@ def me(claims: dict = Depends(current)):
             "sites": [{"id": s["id"], "name": s["name"]} for s in S.tenant.sites.values()
                       if set(s.get("groups", [])) & set(_groups_of(oid))],
             "features": {"doc_summary": _may_summarise(claims["roles"])},
+            "suggestions": _suggestions(),
             "exp": claims["exp"]}
+
+
+@lru_cache(maxsize=1)
+def _suggestions() -> list:
+    """Example questions of this data room: <tenant>/suggestions.json, [[label, question, groups | null, staff only]].
+    None: the app's built-in examples (the synthetic Sao Mai room) are shown."""
+    p = settings.tenant_dir / "suggestions.json"
+    try:
+        return json.loads(p.read_text(encoding="utf-8")) if p.exists() else []
+    except (OSError, ValueError):
+        return []
 
 
 class ChatIn(BaseModel):

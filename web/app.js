@@ -255,7 +255,7 @@ async function renderLogin(message) {
           <div class="alert bad hidden" id="login-err" role="alert"></div>
           <label class="field">Email<input class="input" id="email" type="email" autocomplete="username" required placeholder="ten@congty.com" aria-describedby="login-err"></label>
           <label class="field">Mật khẩu
-            <span class="pw-wrap"><input class="input" id="password" type="password" autocomplete="current-password" required aria-describedby="login-err">
+            <span class="pw-wrap"><input class="input" id="password" type="password" autocomplete="current-password" required aria-label="Mật khẩu" aria-describedby="login-err">
             <button type="button" class="btn ghost sm" id="pw-toggle" aria-label="Hiện mật khẩu" aria-pressed="false">${icon("eye")}</button></span></label>
           <button class="btn primary" id="login-btn" type="submit" style="height:40px">Đăng nhập</button>
         </form>
@@ -523,9 +523,12 @@ const SUGGEST = [   // [label, question, group needed (null = everyone), staff o
   ["Nguyên văn", "Trích nguyên văn điều khoản thanh toán trong hợp đồng mua bán điện", null],
   ["English", "What was Sao Mai's net revenue in 2025?", null],
 ];
+// a data room may bring its own examples (<tenant>/suggestions.json, sent in /api/me); groups: one id, a list, or null
 const mySuggestions = () => {
   const staff = (ME.roles || []).includes("Staff.AI");
-  return SUGGEST.filter(([, , grp, staffOnly]) => staff ? true : !staffOnly && (!grp || (ME.groups || []).includes(grp))).slice(0, 6);
+  const mine = (grp) => !grp || [].concat(grp).some((g) => (ME.groups || []).includes(g));
+  const list = ME.suggestions && ME.suggestions.length ? ME.suggestions : SUGGEST;
+  return list.filter(([, , grp, staffOnly]) => (!staffOnly || staff) && (staff && !ME.suggestions?.length ? true : mine(grp))).slice(0, 6);
 };
 const MODE_LABEL = { fact: "Trả lời nhanh", summary: "Tổng hợp", compare: "So sánh", list: "Liệt kê", full: "Nguyên văn" };
 // live status line while answering: server step name -> what the user reads
