@@ -5,6 +5,7 @@ from dr.connector.sync import Connector
 from dr.core import answer
 from dr.core.pgindex import PgSearchIndex, tsv_literal
 from dr.db import pg
+from dr.gateway import accounts
 from dr.gateway import app as appmod
 from dr.ingest.chunker import fold
 from dr.security import ratelimit
@@ -31,6 +32,7 @@ def client(db, tmp_path):
     S.index.refresh()
     S.deps = answer.Deps(llm=stub_llm)
     ratelimit.limiter.reset()
+    accounts._fails.clear()  # the lockout test must not lock inv-c1 for the tests after it
     return TestClient(appmod.app)  # no lifespan: state injected above
 
 
