@@ -146,7 +146,7 @@ const post = (path, body) => api(path, { method: "POST", body });
 
 // Open a cited file: the backend checks this account's access with SharePoint first and only then
 // returns a link (Microsoft 365: the file's own URL, which SharePoint checks against the same SSO
-// login again; demo: a single-use ticket). No public or shareable link is ever shown.
+// login again; demo: a single-use ticket to the view-only viewer). No public or shareable link is ever shown.
 async function openFile(id) {
   const w = window.open("", "_blank");
   if (w) { w.opener = null; w.document.title = "Đang kiểm tra quyền…"; w.document.body.textContent = "Đang kiểm tra quyền truy cập…"; }
@@ -583,7 +583,7 @@ function openPanel(i, tab, n) {
       <div class="cite-loc">${esc(SITE_LABEL[c.site_id] || c.site_id)} · ${esc(c.locator)}${c.ocr ? " · bản scan (OCR)" : ""}</div>
       <blockquote>${esc(c.quote)}</blockquote>
       ${c.crop ? `<figure class="crop"><img loading="lazy" alt="Vùng tương ứng trên bản scan gốc" src="/crop/${encodeURIComponent(c.item_id)}?ticket=${encodeURIComponent(c.crop.ticket || "")}&page=${encodeURIComponent(c.crop.page)}${c.crop.box ? "&box=" + c.crop.box.join(",") : ""}"><figcaption>${c.crop.box ? "Vùng gốc trên bản scan (đã nắn thẳng)" : "Trang scan gốc (đã nắn thẳng)"}</figcaption></figure>` : ""}
-      <button class="btn sm" data-open="${esc(c.item_id)}" title="Hệ thống kiểm tra quyền của tài khoản bạn với SharePoint rồi mới mở file">${icon("file")} Mở file ${icon("ext")}</button>
+      <button class="btn sm" data-open="${esc(c.item_id)}" title="Hệ thống kiểm tra quyền của tài khoản bạn rồi mới cho xem file (chỉ xem, không tải về)">${icon("file")} Xem file ${icon("ext")}</button>
     </div>`).join("");
   const trace = `<ol class="steps">${(r.trace || []).map((s) => {
     const { step, ok, ms, ...rest } = s;
@@ -713,7 +713,7 @@ async function pageReview(page) {
       <details class="trace"><summary>${icon("file")} ${d.answer.citations.length} trích dẫn</summary>${d.answer.citations.map((c) =>
         `<div class="cite" style="margin-top:8px"><div class="cite-top"><span class="cite-n">${c.n}</span>${ftype((c.name.split(".").pop() || "").toLowerCase())}<span class="cite-name">${esc(c.name)}</span></div>
         <div class="cite-loc">${esc(c.locator)}</div><blockquote>${esc(c.quote)}</blockquote>
-        <button class="linkbtn" data-open="${esc(c.item_id)}">Mở file ${icon("ext")}</button></div>`).join("")}</details>
+        <button class="linkbtn" data-open="${esc(c.item_id)}">Xem file ${icon("ext")}</button></div>`).join("")}</details>
       ${d.status === "pending" ? `<div class="inline-form"><input class="input" data-note placeholder="Ghi chú cho người hỏi (khi từ chối) hoặc cho nhật ký" style="flex:1;max-width:none">
         <button class="btn danger" data-act="reject">${icon("x")} Từ chối</button>
         <button class="btn primary" data-act="approve">${icon("check")} Duyệt & phát hành</button></div>`
@@ -755,7 +755,7 @@ async function pageSearch(page) {
         ${(x.match || []).includes("name") ? '<span class="chip brand">khớp tên</span>' : ""}${x.ocr ? '<span class="chip info">bản scan</span>' : ""}</div>
       <div class="muted small">${esc([x.path, x.label, x.locator].filter(Boolean).join(" · "))}</div>
       ${x.snippet ? `<p class="snip">${highlight(x.snippet, r.terms)}</p>` : ""}
-      <div class="cite-foot"><button class="linkbtn" data-open="${esc(x.item_id)}">${icon("file")} Mở file ${icon("ext")}</button>
+      <div class="cite-foot"><button class="linkbtn" data-open="${esc(x.item_id)}">${icon("file")} Xem file ${icon("ext")}</button>
         <span style="flex:1"></span>${ME.features?.doc_summary ? `<button class="btn sm" data-summary="${esc(x.item_id)}" data-name="${esc(x.name)}">${icon("spark")} Tóm tắt</button>` : ""}
         <button class="btn sm" data-askabout="${esc(x.name)}">${icon("chat")} Hỏi về tài liệu này</button></div></div>`).join("");
     $$("[data-askabout]").forEach((b) => b.onclick = () => { location.hash = "#/chat"; setTimeout(() => { const q = $("#q"); if (q) { q.value = `Tài liệu ${b.dataset.askabout} nói gì về `; q.focus(); } }, 50); });

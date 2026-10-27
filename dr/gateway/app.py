@@ -7,7 +7,6 @@ import contextvars
 import io
 import json
 import logging
-import mimetypes
 import queue
 import threading
 import time
@@ -16,7 +15,7 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -28,7 +27,7 @@ from dr.core import conversation
 from dr.core.index import SearchIndex
 from dr.core.pgindex import make_index
 from dr.db import pg
-from dr.gateway import accounts, auth, scenarios
+from dr.gateway import accounts, auth, scenarios, viewer
 from dr.gateway import admin as admin_mod
 from dr.ingest import ocr, pipeline
 from dr.security import ratelimit
@@ -600,21 +599,54 @@ def _with_crop_tickets(result: dict, oid: str) -> dict:
 
 @app.get("/open/{item_id}")
 def open_file(item_id: str, ticket: str = Query(...)):
-    """Demo 'SharePoint viewer'. With Microsoft 365 the link is the file's webUrl instead."""
+    """Demo stand-in for the CT VDR Viewer, view only (dr/gateway/viewer.py): the file is shown, never handed out.
+    BRD 19/10: sources open in CT VDR Viewer and AI Data Room makes no viewer of its own (BRULE-08), so this
+    exists only while there is no CT VDR to link to (BRULE-06). With Microsoft 365 the link is the file's webUrl."""
     if settings.tenant_mode == "m365":
-        raise HTTPException(404, "Mở tài liệu trực tiếp trên SharePoint")
+        raise HTTPException(404, "Trình xem này chỉ dùng cho bản demo")
     claims = auth.verify_ticket(ticket, item_id, "open")
     if not claims:
-        raise HTTPException(401, "Liên kết đã hết hạn hoặc đã được dùng, hãy bấm Mở file lại")
-    if claims["oid"] == auth.ADMIN_OID or not S.tenant.sp_can_read(claims["oid"], item_id):
-        raise HTTPException(403, "SharePoint: bạn không có quyền mở tài liệu này")
-    p: Path = S.tenant.file_path(item_id)
-    mt = mimetypes.guess_type(p.name)[0] or "application/octet-stream"
-    if p.suffix.lower() == ".eml":
-        mt = "text/plain; charset=utf-8"
-    inline = p.suffix.lower() in (".pdf", ".png", ".jpg", ".jpeg", ".html", ".txt", ".md", ".csv", ".eml")
-    return FileResponse(p, media_type=mt, filename=S.tenant.items[item_id]["name"],
-                        content_disposition_type="inline" if inline else "attachment")
+        raise HTTPException(401, "Liên kết đã hết hạn hoặc đã được dùng, hãy bấm Xem file lại")
+    it, oid = _viewable(claims, item_id)
+    p, ext = S.tenant.file_path(item_id), it["ext"].lower()
+    try:
+        body = (viewer.pages_html(item_id, viewer.page_count(p, ext), auth.issue_ticket(oid, item_id, "page", ttl=1800))
+                if ext in viewer.PAGED else viewer.body_html(p, ext))
+    except Exception:
+        body = viewer.NOT_SHOWN
+    audit.append(oid, "file_view", {"item_id": item_id})
+    u = S.tenant.users.get(oid, {})
+    page, headers = viewer.response_parts(it["name"], " – ".join(v for v in (u.get("name"), u.get("email")) if v), body)
+    return HTMLResponse(page, headers=headers)
+
+
+@app.get("/open/{item_id}/page/{n}")
+def open_page(item_id: str, n: int, ticket: str = Query(...)):
+    """One page of a PDF or an image in the view-only viewer; access is checked again for every page."""
+    if settings.tenant_mode == "m365":
+        raise HTTPException(404, "Trình xem này chỉ dùng cho bản demo")
+    claims = auth.verify_ticket(ticket, item_id, "page")
+    if not claims:
+        raise HTTPException(401, "Liên kết đã hết hạn, hãy bấm Xem file lại")
+    it, _ = _viewable(claims, item_id)
+    ext = it["ext"].lower()
+    try:
+        img = viewer.page_jpeg(S.tenant.file_path(item_id), ext, n) if ext in viewer.PAGED else None
+    except Exception:
+        img = None
+    if not img:
+        raise HTTPException(404, "Không có trang này")
+    return Response(img, media_type="image/jpeg", headers=viewer.NO_STORE)
+
+
+def _viewable(claims: dict, item_id: str) -> tuple[dict, str]:
+    oid = claims["oid"]
+    if oid == auth.ADMIN_OID or not S.tenant.sp_can_read(oid, item_id):
+        raise HTTPException(403, "Bạn không có quyền xem tài liệu này")
+    it = S.tenant.items[item_id]
+    if it.get("malware"):
+        raise HTTPException(403, "Tài liệu bị đánh dấu có mã độc nên không mở được")
+    return it, oid
 
 
 @app.get("/crop/{item_id}")
