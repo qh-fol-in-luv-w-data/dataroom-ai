@@ -12,6 +12,8 @@ _lock = threading.Lock()
 
 def _device() -> str:
     import torch
+    if torch.cuda.is_available():         # a Linux server with an NVIDIA GPU (benchmarks)
+        return "cuda"
     return "mps" if torch.backends.mps.is_available() else "cpu"
 
 
@@ -23,7 +25,7 @@ def get():
             # 384 tokens and half precision on the Apple GPU: ~12% faster, same top-5 ranking on the
             # benchmark questions (scripts/latency_profile.py; measured 1.67 s -> 1.46 s per 40 passages)
             _model = CrossEncoder(settings.rerank_model, max_length=384, device=_device())
-            if _device() == "mps":
+            if _device() in ("mps", "cuda"):
                 _model.model.half()
     return _model
 

@@ -9,6 +9,7 @@ none of the forbidden numbers is. Pause bulk ingest first: it shares Ollama.
 """
 from __future__ import annotations
 
+import json
 import re
 import sys
 import threading
@@ -86,7 +87,7 @@ def main() -> int:
     index.refresh()
     deps = answer.Deps.real()
     llm.warm()
-    results, times = [], []
+    results, times, wrong = [], [], 0
     for oid, conv, kind, q, need, words, never in CASES:
         conv_id = f"eval-{conv}" if conv else None
         t = time.time()
@@ -101,6 +102,7 @@ def main() -> int:
         good = (all(any(a in d for a in e.split("|")) for e in need) and all(w.lower() in text.lower() for w in words)
                 and not any(e in d for e in never))
         results.append((kind, good))
+        wrong += not good and not r.get("message")     # answered, and the answer is wrong (worse than a refusal)
         print(f"[{'ĐÚNG' if good else 'SAI '}] {dt:5.1f}s {oid} ({kind}) {q}\n         → {text[:230]}", flush=True)
     stop.set()
     by_kind: dict[str, list[int]] = {}
@@ -112,6 +114,8 @@ def main() -> int:
     print(f"\nĐúng {sum(g for _, g in results)}/{len(results)} · TB {sum(times) / len(times):.1f}s/câu · lâu nhất {max(times):.1f}s")
     for g, (ok, n) in by_kind.items():
         print(f"  {g:<18} {ok}/{n}")
+    print("RESULT " + json.dumps({"ok": sum(g for _, g in results), "n": len(results), "wrong": wrong,
+                                  "avg_s": round(sum(times) / len(times), 1)}))
     return 0
 
 

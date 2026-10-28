@@ -8,6 +8,7 @@ checks that every expected number appears in the answer. Pause bulk ingest first
 """
 from __future__ import annotations
 
+import json
 import re
 import sys
 import threading
@@ -59,7 +60,7 @@ def main(models: list[str]) -> int:
         settings.llm_model = model
         llm.clear_cache()
         llm.warm()
-        ok, times = 0, []
+        ok, times, wrong = 0, [], 0
         print(f"\n=== {model}")
         for kind, q, exp, *words in CASES:
             t = time.time()
@@ -69,8 +70,11 @@ def main(models: list[str]) -> int:
             text = r.get("message") or " ".join(c["text"] for c in r.get("claims", []))
             good = all(e in digits(text) for e in exp) and all(w.lower() in text.lower() for w in (words[0] if words else []))
             ok += good
+            wrong += not good and not r.get("message")
             print(f"[{'ĐÚNG' if good else 'SAI '}] {dt:5.1f}s ({kind}) {q}\n         → {text[:220]}")
         summary.append((model, ok, sum(times) / len(times), max(times)))
+        print("RESULT " + json.dumps({"model": model, "ok": ok, "n": len(CASES), "wrong": wrong,
+                                      "avg_s": round(sum(times) / len(times), 1)}), flush=True)
     stop.set()
     print("\nModel            Đúng   TB/câu   Lâu nhất")
     for m, ok, avg, mx in summary:

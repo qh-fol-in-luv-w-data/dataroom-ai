@@ -19,7 +19,7 @@ from unidecode import unidecode
 from dr import audit
 from dr.config import (BLOCKED_MESSAGE, NEUTRAL_REFUSAL, OUT_OF_SCOPE_MESSAGE, RETRY_MESSAGE, UNAVAILABLE_MESSAGE,
                        settings)
-from dr.core import accents, audience, conflicts, conversation, facts, gates, intent, tables, verify
+from dr.core import accents, audience, conflicts, conversation, doctype, facts, gates, intent, tables, verify
 from dr.core.index import SearchIndex
 from dr.core import lang as lang_mod
 from dr.core import review
@@ -129,6 +129,29 @@ def _call(fn, *args, **kwargs):
     if any(p.kind is p.VAR_KEYWORD for p in params.values()):
         return fn(*args, **kwargs)
     return fn(*args, **{k: v for k, v in kwargs.items() if k in params})
+
+
+def _source(p: dict) -> str:
+    """The passage's place as the model sees it; with DR_DOCTYPE its kind first (survives the 160-char cut)."""
+    src = p.get("context") or p["name"]
+    kind = doctype.classify(p.get("path", ""), p["name"]) if settings.doc_type else ""
+    return f"loại: {kind} · {src}" if kind else src
+
+
+def vote(runs: list[tuple[dict, dict]], passages: dict[int, dict], question: str) -> tuple[tuple[dict, dict], int]:
+    """DR_VOTE: of several sampled answers, the one whose verified claims most samples agree on (same figures, or
+    the same words when there is no figure); the first (temperature 0) wins a tie. -> (run, how many agree)."""
+    sigs = []
+    for raw, labels in runs:
+        kept, _ = verify.check(raw.get("claims", []), labels, passages, question)
+        nums = sorted({re.sub(r"\D", "", d) for cl in kept for d, _ in verify.numbers_with_digits(cl.text)})
+        sigs.append(tuple(nums) if nums else tuple(sorted(verify.norm(cl.text) for cl in kept)))
+    counts = {sig: sigs.count(sig) for sig in sigs if sig}
+    if not counts:
+        return runs[0], 0
+    best = max(counts.values())
+    k = next(k for k, sig in enumerate(sigs) if counts.get(sig) == best)
+    return runs[k], best
 
 
 def document_chunks(oid: str, codes: list[str], files: list[str], limit: int = 400) -> list[int]:
@@ -624,8 +647,7 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
     # Full-text questions get the source sentences themselves: the model just picks sentence ids.
     verbatim = plan.verbatim
     llm_call = deps.llm_quotes if verbatim and deps.llm_quotes else deps.llm
-    llm_in = [{"chunk_id": c, "text": passages[c]["text"], "source": passages[c].get("context") or passages[c]["name"]}
-              for c in selected]
+    llm_in = [{"chunk_id": c, "text": passages[c]["text"], "source": _source(passages[c])} for c in selected]
     n_sent = settings.max_sentences if plan.intent == "fact" else plan.sentences
     llm_in = focus_sentences(q_search, llm_in, deps, trace, n=n_sent, keep_order_only=bool(whole_doc),
                              queries=parts, budget=settings.prompt_chars_fact if plan.intent == "fact"
@@ -680,6 +702,16 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
                   f" · {plan.intent})", True, raw_claims=len(raw.get("claims", [])), passages=len(llm_in),
                   **(_llm_mod.last_stats() if llm_call in (getattr(_llm_mod, "answer_json", None),
                                                            getattr(_llm_mod, "answer_quotes", None)) else {}))
+        if settings.vote > 1:
+            runs = [(raw, labels)]
+            for k in range(1, settings.vote):
+                try:
+                    runs.append(_call(llm_call, q_llm, llm_in, lang=lang, style=plan.intent, max_claims=plan.claims,
+                                      sample=k))
+                except Exception:
+                    pass
+            (raw, labels), agree = vote(runs, sel_passages, question)
+            trace.add(f"Bỏ phiếu {len(runs)} lần trả lời", True, agree=agree)
 
     # ---- deterministic verification
     kept, dropped = verify.check(raw.get("claims", []), labels, sel_passages, question)
@@ -700,6 +732,17 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
         dropped += dropped2
         trace.add(f"Thử lại có trọng tâm ({FOCUSED_PASSAGES} đoạn đầu) + kiểm chứng", True, kept=len(kept),
                   dropped_reasons=[r for _, r in dropped2])
+    if not kept and not det and settings.llm_fallback and settings.llm_fallback != settings.llm_model:
+        # nothing of the small model's answer held up: the larger model reads the same passages once
+        try:
+            raw, labels = _call(llm_call, q_llm, llm_in, lang=lang, style=plan.intent, max_claims=plan.claims,
+                                model=settings.llm_fallback)
+            kept, dropped3 = verify.check(raw.get("claims", []), labels, sel_passages, question)
+            dropped += dropped3
+            trace.add(f"Hỏi model dự phòng {settings.llm_fallback} + kiểm chứng", True, kept=len(kept),
+                      dropped_reasons=[r for _, r in dropped3])
+        except Exception as e:
+            trace.add(f"Model dự phòng {settings.llm_fallback} không phản hồi", False, error=type(e).__name__)
     # ---- relevance (short answers): a verified sentence can still answer another question
     # (asked for the fee, the lock-up sentence of the same term sheet); drop such claims.
     # Calibrated on the fact set: the reranker alone also dropped right answers (0.003 for a correct

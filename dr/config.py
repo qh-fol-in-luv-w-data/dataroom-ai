@@ -76,6 +76,18 @@ class Settings:
     tenant_mode: str = _env("DR_TENANT", "fake")          # fake (simulated SharePoint/Entra) | m365 (Microsoft Graph)
     m365_config: Path = field(default_factory=lambda: Path(_env("DR_M365_CONFIG", str(ROOT / "data" / "m365.json"))))  # pg (pgvector + BM25 in Postgres, RLS in the query) | memory
     nli_threshold: float = float(_env("DR_NLI_THRESHOLD", "0.5"))
+    # Accuracy methods, each off by default (scripts/grid_eval.py benchmarks them crosswise):
+    # doc_type: each passage's source names its kind (price list, contract, budget plan…) and the prompt says which
+    #   kind answers which question; binding: a number must keep its meaning (price, budget, area…) between the claim
+    #   and its quote; two_stage: the model first picks the sentences, then answers from those only; vote: N samples,
+    #   the answer most verified samples agree on; fewshot: worked examples of the two usual mistakes in the prompt;
+    #   llm_fallback: a second (larger) model asked when nothing of the first model's answer survives verification.
+    doc_type: bool = _env("DR_DOCTYPE", "0") == "1"
+    binding: bool = _env("DR_BINDING", "0") == "1"
+    two_stage: bool = _env("DR_TWO_STAGE", "0") == "1"
+    vote: int = int(_env("DR_VOTE", "1"))
+    fewshot: bool = _env("DR_FEWSHOT", "0") == "1"
+    llm_fallback: str = _env("DR_LLM_FALLBACK", "")
     # OCR: PaddleOCR-VL-1.6 served by mlx-vlm on the Apple GPU; PP-OCRv5 latin as fallback.
     ocr_server_url: str = _env("DR_OCR_SERVER", "http://127.0.0.1:8111/")
     ocr_vl_model: str = _env("DR_OCR_VL_MODEL", str(Path.home() / ".paddlex/official_models/PaddleOCR-VL-1.6"))

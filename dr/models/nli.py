@@ -23,7 +23,9 @@ def _load():
         _tok = AutoTokenizer.from_pretrained(settings.nli_model)
         _model = AutoModelForSequenceClassification.from_pretrained(settings.nli_model)
         _model.eval()
-        if torch.backends.mps.is_available():
+        if torch.cuda.is_available():
+            _model.to("cuda")
+        elif torch.backends.mps.is_available():
             _model.to("mps")
         labels = {v.lower(): k for k, v in _model.config.id2label.items()}
         _entail_idx = labels.get("entailment", 0)

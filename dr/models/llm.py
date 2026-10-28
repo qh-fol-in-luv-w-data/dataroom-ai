@@ -66,6 +66,21 @@ Ví dụ: tài liệu có [D1.2] "Của Hợp đồng số 105/2019-HĐDV/AB-CD 
 "no_answer": false}
 Chỉ trả JSON đúng schema."""
 
+# DR_DOCTYPE: passages carry their kind ("loại: bảng giá") in source; which kind answers which question
+DOCTYPE_RULE = """
+12. Thuộc tính source có ghi "loại: …" của tài liệu. Hỏi giá bán thì dùng bảng giá, báo giá, quảng cáo hay hợp đồng
+    mua bán; ngân sách, dự toán, kế hoạch là chi phí dự kiến, không phải giá. Hỏi thu nhập, lương thì dùng tin tuyển
+    dụng hay chính sách nhân sự, không dùng tiền thuê hay giá trị cam kết của hợp đồng."""
+
+# DR_FEWSHOT: the two usual mistakes of a small model, on made-up documents (never the benchmark's)
+FEWSHOT = """
+Ví dụ về lỗi thường gặp (tài liệu bịa, chỉ để minh họa):
+- [D1.4] "Ngân sách dự kiến cho chiến dịch quảng bá: 900 triệu đồng", [D2.1] "Căn 2PN dự án Hoa Sen giá chỉ từ 2,1 tỷ".
+  Câu hỏi "Căn 2PN dự án Hoa Sen có giá bao nhiêu?" -> dùng D2.1. D1.4 là ngân sách chiến dịch, không phải giá căn hộ.
+- [D1.2] (source: … › Hợp đồng thuê mặt bằng) "Bên B cam kết thuê với giá 2.000 USD/tháng",
+  [D3.1] (source: … › Tin tuyển dụng) "Thu nhập lên đến 25 triệu/tháng".
+  Câu hỏi "Tin tuyển dụng hứa thu nhập bao nhiêu?" -> dùng D3.1. Tiền thuê trong hợp đồng không phải thu nhập."""
+
 STYLE = {
     "table": ("các đoạn là các dòng của một bảng; mỗi dòng ghi 'tên cột: giá trị'. Xét MỌI dòng trước khi trả lời: "
               "với câu hỏi lớn nhất/nhỏ nhất/so sánh, đối chiếu đúng cột được hỏi ở từng dòng và nêu rõ tên dòng "
@@ -202,18 +217,20 @@ _cache_lock = threading.Lock()
 stats = {"hits": 0, "misses": 0}
 
 
-def _key(kind: str, question: str, passages: list[dict], lang: str) -> str:
+def _key(kind: str, question: str, passages: list[dict], lang: str, model: str | None = None) -> str:
     h = hashlib.sha256()
     q = re.sub(r"\s+", " ", question.strip().lower()).rstrip(" ?？.!")
-    for part in (kind, settings.llm_model, lang, q, *(f'{p["chunk_id"]}\x00{p["text"]}' for p in passages)):
+    methods = f"{settings.doc_type}{settings.two_stage}{settings.fewshot}"
+    for part in (kind, model or settings.llm_model, methods, lang, q, *(f'{p["chunk_id"]}\x00{p["text"]}' for p in passages)):
         h.update(part.encode() + b"\x1f")
     return h.hexdigest()
 
 
-def _memo(kind: str, question: str, passages: list[dict], lang: str, compute):
-    if settings.answer_cache <= 0:
+def _memo(kind: str, question: str, passages: list[dict], lang: str, compute, model: str | None = None,
+          sample: int = 0):
+    if settings.answer_cache <= 0 or sample:      # a vote's extra samples must differ, not repeat the first
         return compute()
-    k = _key(kind, question, passages, lang)
+    k = _key(kind, question, passages, lang, model)
     with _cache_lock:
         if k in _cache:
             _cache.move_to_end(k)
@@ -247,17 +264,24 @@ def last_stats() -> dict:
     return v
 
 
-def _chat(system: str, prompt: str, schema: dict, timeout: float, max_tokens: int = 600) -> dict:
+def _chat(system: str, prompt: str, schema: dict, timeout: float, max_tokens: int = 600, model: str | None = None,
+          sample: int = 0) -> dict:
     # num_predict bounds the answer: a constrained-JSON generation that never closes would otherwise
     # run until the context is full (seen once in 1000 red-team questions: 300 s, then a timeout)
-    r = httpx.post(f"{settings.ollama_url}/api/chat", timeout=timeout, json={
-        "model": settings.llm_model,
+    model = model or settings.llm_model
+    body = {
+        "model": model,
         "stream": False,
         "format": schema,
         "keep_alive": settings.llm_keep_alive,
-        "options": {"temperature": 0, "num_ctx": 8192, "num_predict": max_tokens},
+        # sample k of a vote: some randomness, a fixed seed per k so a rerun gives the same samples
+        "options": {"temperature": 0.6 if sample else 0, "num_ctx": 8192, "num_predict": max_tokens,
+                    **({"seed": sample} if sample else {})},
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
-    })
+    }
+    if model.startswith("qwen3"):
+        body["think"] = False         # thinking mode: many times the tokens, and the JSON schema already shapes the answer
+    r = httpx.post(f"{settings.ollama_url}/api/chat", timeout=timeout, json=body)
     r.raise_for_status()
     d = r.json()
     # how the time split between reading the prompt and writing the answer (shown in the trace)
@@ -270,14 +294,41 @@ def _chat(system: str, prompt: str, schema: dict, timeout: float, max_tokens: in
 
 
 # ------------------------------------------------------------------ the two calls
+def _system() -> str:
+    rules, tail = SYSTEM.rsplit("\nVí dụ:", 1)
+    return (rules + (DOCTYPE_RULE if settings.doc_type else "") + "\nVí dụ:" + tail.rsplit("\nChỉ trả JSON", 1)[0]
+            + (FEWSHOT if settings.fewshot else "") + "\nChỉ trả JSON đúng schema.")
+
+
+def pick_sentences(question: str, passages: list[dict], n: int = 5, timeout: float = 90, model: str | None = None,
+                   sample: int = 0) -> list[dict]:
+    """DR_TWO_STAGE, step 1: the model only points at the sentences that answer; the passages cut down to
+    those (still substrings of each passage, so quotes verify). [] when it points at nothing."""
+    prompt, _, sentences = build_prompt(question, passages, "vi")
+    system = QUOTE_SYSTEM.replace("{n}", str(n)).replace("{company}", settings.company)
+    raw = _chat(system, prompt.rsplit("\nNgôn ngữ trả lời:", 1)[0] + f"\nCâu hỏi: {question}", QUOTE_SCHEMA, timeout,
+                max_tokens=200, model=model, sample=sample)
+    picked = {c["quote"] for c in _cite((raw.get("sentences") or [])[:n], sentences)}
+    out = []
+    for i, p in enumerate(passages, start=1):
+        kept = [s for sid, s in sentences.items() if sid.split(".")[0] == f"D{i}" and s in picked]
+        if kept:
+            out.append({**p, "text": "\n\n".join(kept)})
+    return out
+
+
 def answer_json(question: str, passages: list[dict], lang: str = "vi", style: str = "fact", max_claims: int = 3,
-                timeout: float = 120) -> tuple[dict, dict[str, int]]:
-    system = SYSTEM.replace("{style}", STYLE.get(style, STYLE["fact"]).format(n=max_claims)).replace(
+                timeout: float = 120, model: str | None = None, sample: int = 0) -> tuple[dict, dict[str, int]]:
+    system = _system().replace("{style}", STYLE.get(style, STYLE["fact"]).format(n=max_claims)).replace(
         "{company}", settings.company)
 
     def compute():
-        prompt, labels, sentences = build_prompt(question, passages, lang)
-        raw = _chat(system, prompt, SCHEMA, timeout, max_tokens=600 if style == "fact" else 1500)
+        given = passages
+        if settings.two_stage and style in ("fact", "multi"):
+            given = pick_sentences(question, passages, model=model, sample=sample) or passages
+        prompt, labels, sentences = build_prompt(question, given, lang)
+        raw = _chat(system, prompt, SCHEMA, timeout, max_tokens=600 if style == "fact" else 1500, model=model,
+                    sample=sample)
         claims = []
         for c in raw.get("claims") or []:
             if not isinstance(c, dict):
@@ -288,11 +339,11 @@ def answer_json(question: str, passages: list[dict], lang: str = "vi", style: st
                 claims.append(_repair({"text": text, "citations": _cite(c.get("sentences"), sentences)}, sentences,
                                       question))
         return {"claims": claims[:max_claims], "no_answer": bool(raw.get("no_answer")) and not claims}, labels
-    return _memo(f"summary:{style}:{max_claims}", question, passages, lang, compute)
+    return _memo(f"summary:{style}:{max_claims}", question, passages, lang, compute, model, sample)
 
 
 def answer_quotes(question: str, passages: list[dict], lang: str = "vi", max_claims: int = 3, timeout: float = 90,
-                  **_) -> tuple[dict, dict[str, int]]:
+                  model: str | None = None, sample: int = 0, **_) -> tuple[dict, dict[str, int]]:
     """Same output shape as answer_json; each claim is one verbatim sentence citing itself.
     More than 3 sentences (full-text questions) are shown in reading order."""
     system = QUOTE_SYSTEM.replace("{n}", str(max_claims)).replace("{company}", settings.company)
@@ -300,7 +351,7 @@ def answer_quotes(question: str, passages: list[dict], lang: str = "vi", max_cla
     def compute():
         prompt, labels, sentences = build_prompt(question, passages, lang)
         raw = _chat(system, prompt.rsplit("\nNgôn ngữ trả lời:", 1)[0] + f"\nCâu hỏi: {question}",
-                    QUOTE_SCHEMA, timeout, max_tokens=200)
+                    QUOTE_SCHEMA, timeout, max_tokens=200, model=model, sample=sample)
         cites = _cite((raw.get("sentences") or [])[:max_claims], sentences)
         # the same clause copied into two documents (or one sentence inside a longer one): show it once
         flat = [re.sub(r"\W+", " ", c["quote"].lower()).strip() for c in cites]
@@ -311,7 +362,7 @@ def answer_quotes(question: str, passages: list[dict], lang: str = "vi", max_cla
             cites.sort(key=lambda c: order.index(next(k for k, v in sentences.items() if v == c["quote"])))
         claims = [{"text": c["quote"], "citations": [c]} for c in cites]
         return {"claims": claims, "no_answer": not claims}, labels
-    return _memo(f"quote:{max_claims}", question, passages, lang, compute)
+    return _memo(f"quote:{max_claims}", question, passages, lang, compute, model, sample)
 
 
 REWRITE_SCHEMA = {"type": "object", "properties": {"question": {"type": "string"}}, "required": ["question"]}
