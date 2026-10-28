@@ -303,7 +303,7 @@ figcaption { padding: 12px 18px 14px; border-top: 1px solid var(--line); color: 
         <rect class="box" x="530" y="584" width="310" height="160" rx="10"/>
         <text class="t" x="550" y="610">Mô hình AI tại chỗ</text>
         <text class="m" x="550" y="634">Ollama :11434</text>
-        <text class="s" x="550" y="652">qwen2.5:7b · viết câu trả lời</text>
+        <text class="s" x="550" y="652">qwen3:4b · viết câu trả lời</text>
         <text class="s" x="550" y="670">bge-m3 · vector 1024 chiều</text>
         <text class="s" x="550" y="688">bge-reranker-v2-m3 · xếp hạng</text>
         <text class="s" x="550" y="706">mDeBERTa · NLI</text>
@@ -447,7 +447,7 @@ const D = {
     text: "Với từng file sắp dùng, hỏi SharePoint dưới danh nghĩa người hỏi: còn quyền mở, đúng phiên bản đã lập chỉ mục, nhãn AI_Use cho phép. File không đạt bị bỏ lặng lẽ và lấy file kế tiếp bù vào; lỗi mạng thì coi như không đạt.",
     files: ["dr/core/gates.py · live_check", "dr/m365/tenant.py · get_item_as_user (OBO)"], facts: [["Kịch bản đổi quyền giữa chừng", "5/5 chặn đúng"]] },
   s9: { kind: "Bước 9", title: "LLM tại chỗ: trích theo mã câu",
-    text: "qwen2.5:7b chạy trong Ollama, trả JSON có ràng buộc. Mỗi câu trong tài liệu mang mã như [D2.3]; model ghi mã thay vì chép lại câu trích. Tài liệu được bọc như dữ liệu không tin cậy với ranh giới ngẫu nhiên mỗi lần hỏi.",
+    text: "qwen3:4b chạy trong Ollama, trả JSON có ràng buộc. Mỗi câu trong tài liệu mang mã như [D2.3]; model ghi mã thay vì chép lại câu trích. Tài liệu được bọc như dữ liệu không tin cậy với ranh giới ngẫu nhiên mỗi lần hỏi.",
     files: ["dr/models/llm.py"], facts: [["Đọc đầu vào", "~400 token/s"], ["Sinh chữ", "~30 token/s"]] },
   s10: { kind: "Bước 10", title: "Kiểm chứng tất định",
     text: "Một ý chỉ được giữ khi câu trích có thật trong đoạn đã đưa cho model và mọi con số trong ý xuất hiện trong câu trích (so theo giá trị: 2.786,9 = 2,786.9). Model ghi đúng số nhưng gắn nhầm câu thì hệ thống tự gắn câu chứa con số đó.",
@@ -464,7 +464,7 @@ const D = {
     files: ["dr/db/schema.sql", "dr/db/pg.py"], facts: [["Bảng", "15"], ["Hàm SQL", "6"], ["Vector", "halfvec(1024) · HNSW"]] },
   models: { kind: "Mô hình", title: "Mô hình AI tại chỗ",
     text: "Không gửi dữ liệu ra ngoài. LLM và embedding chạy trong Ollama; reranker và NLI chạy trên GPU Apple; OCR bản scan chạy PaddleOCR-VL qua máy chủ mlx_vlm riêng, có PP-OCRv5 đọc đối chiếu con số.",
-    list: ["qwen2.5:7b Q4_K_M, giữ trong bộ nhớ 24 giờ", "Kết quả mô hình được nhớ theo đúng đầu vào; câu hỏi lặp lại trả lời gần như tức thì"],
+    list: ["qwen3:4b Q4_K_M, giữ trong bộ nhớ 24 giờ", "Kết quả mô hình được nhớ theo đúng đầu vào; câu hỏi lặp lại trả lời gần như tức thì"],
     files: ["dr/models/llm.py", "dr/models/embed.py", "dr/models/rerank.py", "dr/models/nli.py", "dr/ingest/ocr.py"],
     facts: [["Phần LLM trong thời gian trả lời", "phần lớn"], ["OCR: số đúng trên bản scan khó", "98,4%"]] },
   connector: { kind: "Đồng bộ", title: "Connector đồng bộ quyền",

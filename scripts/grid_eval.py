@@ -49,7 +49,8 @@ def run_config(model: str, methods: list[str], out: Path) -> dict:
             r = json.loads(line)
             if r["name"] == name and r.get("rerun", 0) == 0:
                 return r
-    env = {**os.environ, "DR_LLM": model, "DR_LLM_KEEP_ALIVE": "10m", "PYTHONUNBUFFERED": "1"}
+    # DR_BINDING defaults to on in dr/config.py: a configuration without "binding" turns it off explicitly
+    env = {**os.environ, "DR_LLM": model, "DR_LLM_KEEP_ALIVE": "10m", "PYTHONUNBUFFERED": "1", "DR_BINDING": "0"}
     for m in methods:
         env.update(METHODS[m])
     res = {"name": name, "model": model, "methods": methods}

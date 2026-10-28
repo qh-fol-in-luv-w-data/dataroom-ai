@@ -22,6 +22,7 @@ def test_unbound_keeps_same_or_unknown_meaning():
 def test_check_drops_unbound_claim_only_when_flag_on(monkeypatch):
     claims = [{"text": "Căn studio có giá 600 triệu.", "citations": [{"doc": "D1", "quote": "Ngân sách dự kiến 600 triệu đồng"}]}]
     passages = {1: {"text": "Ngân sách dự kiến 600 triệu đồng cho chiến dịch."}}
+    monkeypatch.setattr(settings, "binding", False)
     assert len(verify.check(claims, {"D1": 1}, passages)[0]) == 1
     monkeypatch.setattr(settings, "binding", True)
     kept, dropped = verify.check(claims, {"D1": 1}, passages)
@@ -35,7 +36,8 @@ def test_doctype_from_name_then_folders():
     assert doctype.classify("/sites/a/Shared Documents/x", "IMG_0042.jpg") == ""
 
 
-def test_vote_takes_the_answer_most_samples_agree_on():
+def test_vote_takes_the_answer_most_samples_agree_on(monkeypatch):
+    monkeypatch.setattr(settings, "binding", False)   # with binding on, the "600 triệu" sample fails verification
     passages = {1: {"text": "Giá 1,4 tỷ. Ngân sách 600 triệu."}}
 
     def run(fig, quote):
