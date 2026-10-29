@@ -235,14 +235,17 @@ def last_stats() -> dict:
 def _chat(system: str, prompt: str, schema: dict, timeout: float, max_tokens: int = 600) -> dict:
     # num_predict bounds the answer: a constrained-JSON generation that never closes would otherwise
     # run until the context is full (seen once in 1000 red-team questions: 300 s, then a timeout)
-    r = httpx.post(f"{settings.ollama_url}/api/chat", timeout=timeout, json={
+    body = {
         "model": settings.llm_model,
         "stream": False,
         "format": schema,
         "keep_alive": settings.llm_keep_alive,
         "options": {"temperature": 0, "num_ctx": 8192, "num_predict": max_tokens},
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
-    })
+    }
+    if settings.llm_model.startswith("qwen3"):
+        body["think"] = False         # thinking mode: many times the tokens, and the JSON schema already shapes the answer
+    r = httpx.post(f"{settings.ollama_url}/api/chat", timeout=timeout, json=body)
     r.raise_for_status()
     d = r.json()
     # how the time split between reading the prompt and writing the answer (shown in the trace)
