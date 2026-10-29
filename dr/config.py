@@ -22,7 +22,7 @@ class Settings:
     pg_bin: Path = Path(_env("DR_PG_BIN", "/usr/local/opt/postgresql@15/bin"))
 
     ollama_url: str = _env("DR_OLLAMA", "http://127.0.0.1:11434")
-    llm_model: str = _env("DR_LLM", "qwen2.5:7b")
+    llm_model: str = _env("DR_LLM", "qwen3:4b")       # chosen by the model x method benchmark (with binding)
     embed_model: str = _env("DR_EMBED", "bge-m3")
     rerank_model: str = _env("DR_RERANK", "BAAI/bge-reranker-v2-m3")
     nli_model: str = _env("DR_NLI", "MoritzLaurer/mDeBERTa-v3-base-xnli-multilingual-nli-2mil7")
@@ -69,6 +69,9 @@ class Settings:
     tenant_mode: str = _env("DR_TENANT", "fake")          # fake (simulated SharePoint/Entra) | m365 (Microsoft Graph)
     m365_config: Path = field(default_factory=lambda: Path(_env("DR_M365_CONFIG", str(ROOT / "data" / "m365.json"))))  # pg (pgvector + BM25 in Postgres, RLS in the query) | memory
     nli_threshold: float = float(_env("DR_NLI_THRESHOLD", "0.5"))
+    # binding: a number must keep its meaning (price, budget, area…) between the claim and its quote
+    # (dr/core/verify.py unbound); DR_BINDING=0 turns it off.
+    binding: bool = _env("DR_BINDING", "1") == "1"
     # OCR: PaddleOCR-VL-1.6 served by mlx-vlm on the Apple GPU; PP-OCRv5 latin as fallback.
     ocr_server_url: str = _env("DR_OCR_SERVER", "http://127.0.0.1:8111/")
     ocr_vl_model: str = _env("DR_OCR_VL_MODEL", str(Path.home() / ".paddlex/official_models/PaddleOCR-VL-1.6"))

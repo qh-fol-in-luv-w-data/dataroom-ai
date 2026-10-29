@@ -14,6 +14,8 @@ import unicodedata
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 
+from dr.config import settings
+
 _NUM = re.compile(r"(?<![\w.,])\d{1,3}(?:[.,]\d{3})+(?:[.,]\d+)?(?![\d])|(?<![\w.,])\d+(?:[.,]\d+)?(?![\d])")
 
 
@@ -127,5 +129,87 @@ def check(raw_claims: list[dict], labels: dict[str, int], passages: dict[int, di
         if missing:
             dropped.append((rc, "con số trong câu trả lời không khớp câu trích"))
             continue
+        if settings.binding:
+            wrong_kind = unbound(text, [g.quote for g in good], numbers_with_digits(question))
+            if wrong_kind:
+                dropped.append((rc, f"con số gắn sai nghĩa: câu trả lời ghi {wrong_kind[0]}, câu trích ghi {wrong_kind[1]}"))
+                continue
         kept.append(Claim(text, good))
     return kept, dropped
+
+
+# ------------------------------------------------------------------ number meaning (DR_BINDING)
+# What a figure is, from the words right before it. Two different meanings never stand for each other: the
+# "ngân sách 600 triệu" of a campaign is not the price of a flat, a lease's "cam kết thuê 3.000 USD" is no salary.
+# Words in no class ("chi phí", "tổng cộng") say nothing, and an unknown side never drops a claim.
+MEANINGS = {
+    "giá": ("giá", "giá bán", "đơn giá", "giá trị", "báo giá", "giá niêm yết", "chỉ từ"),
+    "ngân sách": ("ngân sách", "dự toán", "kinh phí", "phân bổ"),
+    "diện tích": ("diện tích", "thông thủy", "tim tường", "dtxd", "dttt", "dtsd"),
+    "thu nhập": ("thu nhập", "lương", "hoa hồng", "thưởng"),
+    "tiền thuê": ("thuê", "cam kết", "đặt cọc", "cọc"),
+    "thuế": ("thuế", "vat", "gtgt", "mst"),
+}
+_PHRASES = sorted(((tuple(w.split()), m) for m, ws in MEANINGS.items() for w in ws), key=lambda x: -len(x[0]))
+_STOP = re.compile(r"[.;!?\n]")
+
+
+def numbers_with_digits(text: str) -> list[tuple[str, set[Decimal]]]:
+    """Each number as (the number as written, its plausible values)."""
+    out = []
+    for m in _NUM.finditer(text):
+        vals = _parse_number(m.group(0))
+        if vals:
+            out.append((m.group(0), vals))
+    return out
+
+
+def _same_digits(a: str, b: str) -> bool:
+    """Same digits, separators aside; a decimal written with fewer trailing zeros (2.786,9 / 2.786,90) too,
+    but not when a last group of exactly three digits makes it a thousands group ('4.000' is not '4.0')."""
+    da, db = re.sub(r"\D", "", a), re.sub(r"\D", "", b)
+    if da == db:
+        return True
+    last = [re.split(r"[.,]", x)[-1] for x in (a, b)]
+    return (da.rstrip("0") == db.rstrip("0") and all(re.search(r"[.,]", x) for x in (a, b))
+            and all(len(g) != 3 for g in last))
+
+
+def meanings_before(text: str, start: int, window: int = 8) -> set[str]:
+    """Meanings named by the words before position start: back to the previous number or the sentence start,
+    at most `window` words."""
+    head = _STOP.split(text[:start])[-1]
+    prev = list(_NUM.finditer(head))
+    if prev:
+        head = head[prev[-1].end():]
+    words = norm(head).split()[-window:]
+    found = set()
+    for i in range(len(words)):
+        for ph, m in _PHRASES:
+            if tuple(words[i:i + len(ph)]) == ph:
+                found.add(m)
+    return found
+
+
+def unbound(claim: str, quotes: list[str], q_nums: list[tuple[str, set[Decimal]]]) -> tuple[str, str] | None:
+    """(claim's meaning, quote's meaning) for the first figure of the claim whose meaning differs from what every
+    quote says of the same figure; None when they agree or either side does not say. Figures the question
+    itself gives are context and are not checked."""
+    for m in _NUM.finditer(claim):
+        vals = _parse_number(m.group(0))
+        if not vals or any(v & vals and _same_digits(m.group(0), w) for w, v in q_nums):
+            continue
+        said = meanings_before(claim, m.start())
+        if not said:
+            continue
+        theirs: set[str] = set()
+        for q in quotes:
+            for n in _NUM.finditer(q):
+                if _parse_number(n.group(0)) & vals and _same_digits(m.group(0), n.group(0)):
+                    found = meanings_before(q, n.start())
+                    if not found or found & said:
+                        return None           # a quote leaves it open or agrees
+                    theirs |= found
+        if theirs:
+            return ", ".join(sorted(said)), ", ".join(sorted(theirs))
+    return None

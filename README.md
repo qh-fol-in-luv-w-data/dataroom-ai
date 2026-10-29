@@ -15,7 +15,7 @@ Demo phần **AI core** của kế hoạch tổng *AI cho Data Room IPO* (bản 
 
   | Việc | Model |
   |---|---|
-  | Sinh câu trả lời | `qwen2.5:7b` (Ollama) |
+  | Sinh câu trả lời | `qwen3:4b` (Ollama), kèm kiểm tra nghĩa con số (`DR_BINDING`) |
   | Embedding | `bge-m3` (Ollama) |
   | Rerank | `bge-reranker-v2-m3` |
   | Kiểm căn cứ (NLI) | `mDeBERTa-v3-xnli` |
@@ -26,7 +26,7 @@ Demo phần **AI core** của kế hoạch tổng *AI cho Data Room IPO* (bản 
 ## Yêu cầu
 
 - macOS Apple Silicon, ≥ 16 GB RAM, ~10 GB đĩa trống.
-- Ollama.app đang chạy, đã có `qwen2.5:7b` và `bge-m3` (`make models` sẽ pull nếu thiếu).
+- Ollama.app đang chạy, đã có `qwen3:4b` và `bge-m3` (`make models` sẽ pull nếu thiếu).
 - PostgreSQL 15 (Homebrew: `brew install postgresql@15`). Dữ liệu nằm trong `./pgdata`, chỉ mở socket unix, không mở cổng TCP.
 - `uv` (https://docs.astral.sh/uv/).
 

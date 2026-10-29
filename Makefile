@@ -13,7 +13,7 @@ setup:            ## create venv + install dependencies
 models:           ## pre-download PaddleOCR-VL, reranker, NLI; pull Ollama models
 	$(PY) -c "from paddleocr import PaddleOCRVL; PaddleOCRVL(use_doc_orientation_classify=False, use_doc_unwarping=False)" || true
 	$(PY) -c "from huggingface_hub import snapshot_download as s; [s(m) for m in ['BAAI/bge-reranker-v2-m3','MoritzLaurer/mDeBERTa-v3-base-xnli-multilingual-nli-2mil7']]"
-	ollama pull qwen2.5:7b
+	ollama pull qwen3:4b
 	ollama pull bge-m3
 
 pgvector:         ## build + install pgvector 0.8.7 into the Homebrew postgresql@15 (x86_64)
