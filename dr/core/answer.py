@@ -285,6 +285,31 @@ def _clip(sentence: str) -> str:
     return cut[:cut.rfind(" ")] if " " in cut else cut
 
 
+FOCUS_EXTRA = 4      # sentences kept beyond the n best (neighbours, one per passage, the question's codes)
+
+
+def must_keep(question: str, sents: list[tuple[int, int, str]], ranked: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Sentences (passage, sentence) to keep beside the n best, most useful first: the one naming a code or
+    figure of the question (SH09, 2024), the sentence after and before each of the two best, and each passage's
+    best sentence (a passage that was selected is never sent empty)."""
+    have = {(i, j) for i, j, _ in sents}
+    text = {(i, j): s for i, j, s in sents}
+    rank = {k: r for r, k in enumerate(ranked)}
+    out: list[tuple[int, int]] = []
+    anchors = [t for t in verify.codes(question, set()) if any(ch.isdigit() for ch in t)]
+    anchors += [d for d, _ in verify.numbers_with_digits(question) if len(re.sub(r"\D", "", d)) >= 3]
+    if anchors:
+        hit = [k for k in ranked if any(f" {verify.norm(a)} " in f" {verify.norm(text[k])} " for a in anchors)]
+        out += hit[:2]
+    for i, j in ranked[:2]:
+        out += [k for k in ((i, j + 1), (i, j - 1)) if k in have]
+    best: dict[int, tuple[int, int]] = {}
+    for k in ranked:
+        best.setdefault(k[0], k)
+    out += sorted(best.values(), key=lambda k: rank[k])
+    return list(dict.fromkeys(out))
+
+
 def focus_sentences(question: str, llm_in: list[dict], deps: Deps, trace: Trace, n: int | None = None,
                     keep_order_only: bool = False, queries: list[str] | None = None,
                     budget: int | None = None) -> list[dict]:
@@ -322,6 +347,15 @@ def focus_sentences(question: str, llm_in: list[dict], deps: Deps, trace: Trace,
             continue
         keep.add(key)
         used += length[key]
+    if not keep_order_only:
+        # the answer often sits just next to the best match: a value on the line after its label (OCR, tables),
+        # in a passage the reranker liked less, or in the one sentence naming the unit/figure the question names
+        for key in must_keep(question, sents, ranked):
+            if len(keep) >= n + FOCUS_EXTRA:
+                break
+            if key not in keep:
+                keep.add(key)
+                used += length[key]
     out = []
     for i, p in enumerate(llm_in):
         kept = [s for (pi, j, s) in sents if pi == i and (pi, j) in keep]
