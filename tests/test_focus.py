@@ -44,3 +44,16 @@ def test_extras_are_few():
     text = " ".join(f"Câu số {k} của tài liệu về dự án SH09 năm 2024." for k in range(1, 40))
     out = focus_sentences("Dự án SH09 năm 2024?", [{"chunk_id": 1, "text": text}], _deps({"Câu": 0.5}), Trace(), n=5)
     assert len(_kept(out).split("\n\n")) <= 5 + 4
+
+
+def test_long_table_row_is_cut_around_what_the_question_asks():
+    # a merged table row runs far past the 400-character cut; the asked column sits at its end
+    cells = [f"Hạng mục phụ số {k}: {k * 1000} đồng" for k in range(1, 40)]
+    row = " | ".join(cells + ["Tổng giá trị quyết toán: 9.876.543.210 đồng"])
+    out = focus_sentences("Tổng giá trị quyết toán là bao nhiêu?", [{"chunk_id": 1, "text": row}],
+                          _deps({"Hạng mục": 0.5}), Trace(), n=3)
+    kept = _kept(out)
+    assert "9.876.543.210" in kept and len(kept) <= 400 and kept in row     # still a substring: quotes verify
+    # with nothing of the question in it, the row keeps its beginning as before
+    out = focus_sentences("Ai ký biên bản?", [{"chunk_id": 1, "text": row}], _deps({"Hạng mục": 0.5}), Trace(), n=3)
+    assert _kept(out).startswith("Hạng mục phụ số 1:")

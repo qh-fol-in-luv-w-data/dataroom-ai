@@ -304,12 +304,41 @@ _BOILERPLATE = re.compile(r"(^|[.!?]\s)\s*(pham vi chia se|phan loai|scope of sh
 MAX_SENTENCE_CHARS = 400        # a merged table row can run to thousands of characters
 
 
-def _clip(sentence: str) -> str:
-    """A long sentence cut at a word boundary; still a substring of the passage, so quotes verify."""
+def _clip(sentence: str, question: str = "") -> str:
+    """A long sentence cut at word boundaries; still a substring of the passage, so quotes verify. A merged table
+    row is cut around what the question asks (its column label and the value after it), not at its beginning:
+    the first window holding most of the question's key terms, started a little before the first of them."""
     if len(sentence) <= MAX_SENTENCE_CHARS:
         return sentence
-    cut = sentence[:MAX_SENTENCE_CHARS]
-    return cut[:cut.rfind(" ")] if " " in cut else cut
+    start = 0
+    terms = intent.key_terms(question)
+    if terms:
+        # words (start, end, key term or None); a window of words starting at word i, two pointers over them
+        words = [(m.start(), m.end(), next(iter(intent.key_terms(m.group(0))), None))
+                 for m in re.finditer(r"\S+", sentence)]
+        best, first, j, count = 0, 0, 0, {}
+        for i, (a, _, _) in enumerate(words):
+            while j < len(words) and words[j][1] <= a + MAX_SENTENCE_CHARS:
+                if words[j][2] in terms:
+                    count[words[j][2]] = count.get(words[j][2], 0) + 1
+                j += 1
+            if len(count) > best:
+                best, first = len(count), i
+            t = words[i][2]
+            if t in count:
+                count[t] -= 1
+                if not count[t]:
+                    del count[t]
+        if best:
+            # the earliest window with the most key terms, started at its first key term: a label and the value
+            # after it stay together
+            start = next(a for a, _, t in words[first:] if t in terms)
+            back = sentence.rfind(" ", 0, max(0, start - 60))
+            start = back + 1 if back >= 0 and start - back < 120 else start
+    cut = sentence[start:start + MAX_SENTENCE_CHARS]
+    if start + MAX_SENTENCE_CHARS < len(sentence) and " " in cut:
+        cut = cut[:cut.rfind(" ")]
+    return cut
 
 
 FOCUS_EXTRA = 4      # sentences kept beyond the n best (neighbours, one per passage, the question's codes)
@@ -356,7 +385,7 @@ def focus_sentences(question: str, llm_in: list[dict], deps: Deps, trace: Trace,
             if key in seen or _BOILERPLATE.search(unidecode(s).lower()):
                 continue
             seen.add(key)
-            sents.append((i, j, _clip(s)))
+            sents.append((i, j, _clip(s, question)))
     if keep_order_only:
         avg = sum(len(s) for _, _, s in sents) / max(1, len(sents))
         ranked = spread([(i, j) for i, j, _ in sents], min(n, max(1, int(budget // avg))) if budget and avg else n)
