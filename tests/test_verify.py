@@ -174,3 +174,29 @@ def test_claim_may_use_a_name_from_its_cited_file():
     kept, dropped = check([claim], {"D1": 1, "D2": 2}, p, "Tổng mức đầu tư là bao nhiêu?")
     assert kept and not dropped
 
+
+# ---- a claim that only says the question again answers nothing
+def test_claim_repeating_the_question_is_dropped():
+    p = {1: {"chunk_id": 1, "text": "Chủ đầu tư dự án Sao Mai Riverside là Công ty CP Sao Mai Land. Dự án khởi công năm 2023."}}
+    q = "Chủ đầu tư dự án Sao Mai Riverside là ai?"
+    echo = {"text": "Chủ đầu tư dự án Sao Mai Riverside là.",
+            "citations": [{"doc": "D1", "quote": "Chủ đầu tư dự án Sao Mai Riverside là Công ty CP Sao Mai Land."}]}
+    kept, dropped = check([echo], {"D1": 1}, p, q)
+    assert not kept and "lặp lại câu hỏi" in dropped[0][1]
+    right = {"text": "Chủ đầu tư dự án Sao Mai Riverside là Công ty CP Sao Mai Land.",
+             "citations": echo["citations"]}
+    assert check([right], {"D1": 1}, p, q)[0]
+
+
+def test_restating_the_question_with_the_figure_is_an_answer():
+    p = {1: {"chunk_id": 1, "text": "Hotline dự án Sao Mai Riverside: 1900 6868."}}
+    claim = {"text": "Hotline của dự án Sao Mai Riverside là 1900 6868.",
+             "citations": [{"doc": "D1", "quote": "Hotline dự án Sao Mai Riverside: 1900 6868."}]}
+    assert check([claim], {"D1": 1}, p, "Hotline của dự án Sao Mai Riverside là gì?")[0]
+
+
+def test_yes_no_answer_may_repeat_the_question():
+    p = {1: {"chunk_id": 1, "text": "Dự án Sao Mai Riverside có hồ bơi tràn bờ trên tầng thượng."}}
+    claim = {"text": "Dự án Sao Mai Riverside có hồ bơi.",
+             "citations": [{"doc": "D1", "quote": "Dự án Sao Mai Riverside có hồ bơi tràn bờ trên tầng thượng."}]}
+    assert check([claim], {"D1": 1}, p, "Dự án Sao Mai Riverside có hồ bơi không?")[0]

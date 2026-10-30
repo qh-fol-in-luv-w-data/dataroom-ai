@@ -158,6 +158,9 @@ def check(raw_claims: list[dict], labels: dict[str, int], passages: dict[int, di
         if missing:
             dropped.append((rc, "con số trong câu trả lời không khớp câu trích"))
             continue
+        if echoes(text, question, [g.quote for g in good]):
+            dropped.append((rc, "câu trả lời chỉ lặp lại câu hỏi"))
+            continue
         if settings.binding:
             wrong_kind = unbound(text, [g.quote for g in good], q_nums)
             if wrong_kind:
@@ -191,6 +194,29 @@ def check(raw_claims: list[dict], labels: dict[str, int], passages: dict[int, di
             continue
         kept.append(Claim(text, good))
     return kept, dropped
+
+
+# ------------------------------------------------------------------ a claim that only repeats the question
+ECHO_MIN = 0.75
+_YES_NO = re.compile(r"\b(?:không|chưa|phải không|đúng không|hay không|có phải)\s*\??\s*$")
+
+
+def echoes(claim: str, question: str, quotes: list[str]) -> bool:
+    """The claim says the question again ("Chủ đầu tư dự án X là."): at least ECHO_MIN alike (shared words or
+    characters), no figure the question does not already give, and at most one word the question does not have
+    (none of them from its quotes). A yes/no question may be answered by repeating it."""
+    c, q = norm(claim), norm(question)
+    if not c or not q or _YES_NO.search(q):
+        return False
+    cw, qw = c.split(), set(q.split())
+    alike = max(sum(w in qw for w in cw) / len(cw), difflib.SequenceMatcher(None, c, q, autojunk=False).ratio())
+    if alike < ECHO_MIN:
+        return False
+    q_nums = numbers_with_digits(question)
+    if any(not number_supported(d, v, q_nums) for d, v in numbers_with_digits(claim)):
+        return False
+    new = {w for w in cw if w not in qw}
+    return len(new) <= 1 and not new & set(norm(" ".join(quotes)).split())
 
 
 _CODES = re.compile(r"\b(?=[A-Z0-9-]*[A-Z])[A-Z][A-Z0-9-]{1,}\b")       # EZ, GJDC, BNF, SH09, CTG-01
