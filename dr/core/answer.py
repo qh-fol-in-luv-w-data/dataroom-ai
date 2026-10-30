@@ -881,11 +881,13 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
                            "uncertain": bool(doubt) or (cl.nli is not None and cl.nli < settings.nli_threshold)})
     if settings.mask_pii:      # after verification (quotes were checked against the real text)
         masked_kinds: set[str] = set()
-        for c in claims_out:
-            c["text"], k = pii.mask(c["text"])
+        for cl, c in zip(kept, claims_out):
+            # whose number it is is said by the cited passage ("Hotline: 0909…"), not by the claim's own words
+            allow = pii.org_numbers("\n".join(sel_passages[x.chunk_id]["text"] for x in cl.citations))
+            c["text"], k = pii.mask(c["text"], allow)
             masked_kinds.update(k)
         for c in cites:
-            c["quote"], k = pii.mask(c["quote"])
+            c["quote"], k = pii.mask(c["quote"], pii.org_numbers(sel_passages[c["chunk_id"]]["text"]))
             masked_kinds.update(k)
         if masked_kinds:
             trace.add("Che thông tin cá nhân trong câu trả lời", True, kinds=sorted(masked_kinds))

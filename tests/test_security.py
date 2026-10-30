@@ -80,3 +80,39 @@ def test_ask_still_answers_normal_question(env):
     res = answer.ask(tenant, ix, "inv-a1", ["Investor.AI"], "phí thu xếp nhóm A", DEPS)
     assert not res["refused"]
     assert any("Lớp đầu vào" in s["step"] and s["ok"] for s in res["trace"])
+
+
+# ---- phone numbers by context: an organisation's line is not personal data, a person's mobile is
+def test_pii_keeps_organisation_numbers():
+    for text in ["Hotline: 0909 123 456", "Tổng đài CSKH 0912345678", "Công ty CP Sao Mai – ĐT 0283 123 456 – 0912345678",
+                 "Fax: 0912.345.678", "Chi nhánh Đà Nẵng: 0905123456", "Website saomai.vn | 0912 345 678",
+                 "MST: 0312345678-001", "Mã số chi nhánh 0312345678-002", "Liên hệ 0909123456 (hotline)",
+                 "Phòng kinh doanh: 0912345678", "Ban quản lý tòa nhà: 0912345678",
+                 "Văn phòng đại diện tại Hà Nội: 0912345678", "Chi nhánh Bà Rịa: 0905123456"]:
+        out, kinds = pii.mask(text)
+        assert out == text and not kinds, text
+
+
+def test_pii_still_masks_a_persons_mobile():
+    for text, num in [("Ông Nguyễn Văn An, SĐT 0912 345 678", "0912 345 678"),
+                      ("Giám đốc: Trần Thị Bình – 0912345678", "0912345678"),
+                      ("Người đại diện: Lê C, điện thoại 0987654321", "0987654321"),
+                      ("Hotline: 1900 1234 – Anh Minh: 0912345678", "0912345678"),   # the person is nearer
+                      ("Công ty Sao Mai. Chị Hoa (chuyên viên) 0912345678", "0912345678"),
+                      ("Ms. Lan | 0912345678", "0912345678"),
+                      ("Gọi 0912345678 để biết thêm", "0912345678")]:              # no context: masked
+        out, kinds = pii.mask(text)
+        assert num not in out and "SĐT" in kinds, text
+
+
+def test_pii_claim_follows_the_context_of_its_source():
+    """A claim ("Số điện thoại là 0909123456") is judged by the passage it cites, where the context is."""
+    org = "Dự án Sao Mai Riverside. Hotline: 0909 123 456"
+    person = "Ông Trần Văn Bình, điện thoại 0912 345 678"
+    allow = pii.org_numbers(org + "\n" + person)
+    out, _ = pii.mask("Số điện thoại là 0909 123 456.", allow=allow)
+    assert "0909 123 456" in out
+    out, kinds = pii.mask("Số điện thoại là 0912 345 678.", allow=allow)
+    assert "0912 345 678" not in out and kinds == ["SĐT"]
+    # the same number given once as a hotline and once as a person's mobile is masked
+    assert "0912345678" not in pii.org_numbers("Hotline 0912345678. Ông Bình 0912345678")
