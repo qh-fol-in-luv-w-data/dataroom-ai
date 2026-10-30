@@ -182,6 +182,24 @@ def document_chunks(oid: str, codes: list[str], files: list[str], limit: int = 4
     return [r[0] for r in rows]
 
 
+def item_texts(oid: str, item_ids: set[str], limit: int = 2000) -> dict[str, str]:
+    """The current text of each document, its chunks in reading order, as far as this user can read it (RLS)."""
+    from dr.db import pg
+    if not item_ids:
+        return {}
+    try:
+        with pg.as_principal(oid) as cur:
+            rows = cur.execute("SELECT c.item_id, c.text FROM chunks c JOIN items i ON i.item_id = c.item_id AND "
+                               "i.ctag = c.ctag WHERE c.item_id = ANY(%s) ORDER BY c.item_id, c.ordinal LIMIT %s",
+                               (sorted(item_ids), limit)).fetchall()
+    except Exception:            # no database (unit tests on stubs): the cited passages alone are the evidence
+        return {}
+    out: dict[str, list[str]] = {}
+    for it, text in rows:
+        out.setdefault(it, []).append(text)
+    return {it: "\n".join(ts) for it, ts in out.items()}
+
+
 def item_chunks(oid: str, item_id: str, limit: int = 400) -> list[int]:
     """All current chunks, in reading order, of one document the user picked (RLS: none if not readable
     or not usable with AI)."""
@@ -803,11 +821,20 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
                  for cl in kept]
         rel = deps.rerank(q_search, texts)
         ovl = [intent.term_overlap(q_search, t) for t in texts]
-        ok = [(r >= settings.relevance_min and o >= settings.relevance_overlap) if other else
-              (r >= settings.relevance_min or o >= settings.relevance_overlap) for r, o in zip(rel, ovl)]
+        # the cited documents themselves (whole text, folders, file name; read under RLS) must hold the question's
+        # key terms: the claim's own words cannot vouch for it
+        docs = item_texts(oid, {sel_passages[c.chunk_id]["item_id"] for cl in kept for c in cl.citations})
+        ev = [intent.evidence_overlap(q_search, [" ".join([docs.get(p["item_id"], p["text"]), p.get("context") or "",
+                                                           p.get("path") or ""])
+                                                 for p in (sel_passages[c.chunk_id] for c in cl.citations)])
+              for cl in kept]
+        ok = [((r >= settings.relevance_min and o >= settings.relevance_overlap) if other else
+               (r >= settings.relevance_min or o >= settings.relevance_overlap)) and e >= settings.relevance_evidence
+              for r, o, e in zip(rel, ovl, ev)]
         kept = [cl for cl, k in zip(kept, ok) if k]
         trace.add("Kiểm tra đúng trọng tâm câu hỏi", True, dropped=ok.count(False),
-                  scores=[round(r, 3) for r in rel], overlap=[round(o, 2) for o in ovl])
+                  scores=[round(r, 3) for r in rel], overlap=[round(o, 2) for o in ovl],
+                  evidence=[round(e, 2) for e in ev])
     # NLI is a secondary signal; a verbatim answer IS its quotes, so there is nothing to score
     if (deps.nli or deps.nli_many) and kept and not verbatim:
         trace.stage("verify")

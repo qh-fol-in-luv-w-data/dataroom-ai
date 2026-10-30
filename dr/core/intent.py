@@ -98,6 +98,15 @@ def term_overlap(question: str, answer: str) -> float:
     return len(q & key_terms(answer)) / max(1, len(q))
 
 
+def evidence_overlap(question: str, evidence: list[str]) -> float:
+    """Share of the question's key terms found in the documents a claim cites (their text and place), never in
+    the claim itself: asked about a project the data room does not hold, the model writes that project's name
+    into a claim read from another project's document."""
+    q = key_terms(question)
+    have = set().union(*(key_terms(t) for t in evidence)) if evidence else set()
+    return len(q & have) / max(1, len(q))
+
+
 # ------------------------------------------------------------------ the question itself
 _QWORD = re.compile(r"\b(bao nhieu|la gi|nhung gi|nao|khi nao|ai|bao lau|the nao|ra sao|co .{1,60} khong|"
                     r"what|how|which|who|when|where|why|is there|are there|does|do|did|can)\b")

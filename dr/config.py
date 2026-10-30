@@ -54,6 +54,11 @@ class Settings:
     # (calibrated: keeps 45/46 right answers, drops 453/460 off-topic ones and both real cases).
     relevance_min: float = float(_env("DR_RELEVANCE_MIN", "0.1"))
     relevance_overlap: float = float(_env("DR_RELEVANCE_OVERLAP", "0.6"))
+    # ...and, in any case, when the documents it cites (their text and place) hold fewer than relevance_evidence of
+    # the question's key terms: the model writes the question's project name into a claim read from another
+    # project, so the two signals above vouched for it. Calibrated on the CT Group mock test (qwen3-fixcal,
+    # whole cited documents): 0.7 cut 22/26 out-of-scope answers for 1 right answer lost of 207 (0.65: 21, 1; 0.75: 23, 2).
+    relevance_evidence: float = float(_env("DR_RELEVANCE_EVIDENCE", "0.7"))
     llm_keep_alive: str = _env("DR_LLM_KEEP_ALIVE", "24h")    # keep the model loaded (Ollama unloads after 5 min)
     answer_cache: int = int(_env("DR_ANSWER_CACHE", "2000"))  # LLM outputs memoised by exact input; 0 = off
     # the app ingests new/changed files in a background thread; turn off while scripts/ingest.py runs a bulk load
