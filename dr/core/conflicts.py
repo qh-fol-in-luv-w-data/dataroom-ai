@@ -13,6 +13,8 @@ if it were the only one. Here, after the answer is verified:
   and used to say which version is newer. 730 of the CT Group files carry one.
 - `source_weight(path, name)`: a rejected or old version ranks lower, a signed / approved / legal document
   higher (the reranker score is multiplied by it).
+- `older_versions(names)`: files whose names differ only by a date or a version mark (Bảng giá 01.03.2023 /
+  Bảng giá 15.06.2024, v1 / v2): all but the latest, which rank a little lower.
 """
 from __future__ import annotations
 
@@ -123,4 +125,40 @@ def find(question: str, claim_text: str, claim_quotes: list[str], cited: set[int
             out.append(Conflict(cid, ln.strip(), first.group(0)))
             if len(out) >= limit:
                 return out
+    return out
+
+
+_VERSION = re.compile(r"(?<![a-z0-9])(?:v|ver|version|rev|lan|ban)\s?(\d{1,2})(?![0-9])")
+_NOISE = re.compile(r"\b(?:final|updated?|cap nhat|moi nhat|new|copy|ban sao|chinh sua|sua|edit|revised)\b|\(\d+\)")
+
+
+def _stem(name: str) -> str:
+    """The file name without extension, dates and version marks: what two versions of a file share."""
+    s = _fold(re.sub(r"\.[A-Za-z0-9]{2,5}$", "", name))
+    for rx, _ in _DATES:
+        s = rx.sub(" ", s)
+    s = _NOISE.sub(" ", _VERSION.sub(" ", s))
+    return re.sub(r"[^a-z0-9]+", " ", s).strip()
+
+
+def _version(name: str) -> tuple:
+    """(date in the name, version number); None when the name says neither."""
+    d = doc_date(name)
+    v = _VERSION.search(_fold(name))
+    if not d and not v:
+        return None
+    return (d or date.min, int(v.group(1)) if v else 0)
+
+
+def older_versions(names: dict[str, str]) -> set[str]:
+    """item_id -> name: the items that an item of the same stem with a later date or version supersedes."""
+    groups: dict[str, list[tuple[tuple, str]]] = {}
+    for it, name in names.items():
+        stem, ver = _stem(name), _version(name)
+        if len(stem) >= 4 and ver:
+            groups.setdefault(stem, []).append((ver, it))
+    out: set[str] = set()
+    for vs in groups.values():
+        latest = max(v for v, _ in vs)
+        out |= {it for v, it in vs if v < latest}
     return out

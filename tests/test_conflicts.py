@@ -47,3 +47,20 @@ def test_source_weight():
     assert conflicts.source_weight("03. Pháp lý/3.2 Hợp đồng", "HĐ Busway.pdf") == 1.1
     assert conflicts.source_weight("05. Thị trường", "[signed]TTCU-To trinh.pdf") == 1.1
     assert conflicts.source_weight("05. Thị trường", "poster.jpg") == 1.0
+
+
+def test_older_versions_of_the_same_file_name():
+    names = {"a": "Bang gia SH 01.03.2023.pdf", "b": "Bang gia SH 15.06.2024.pdf", "c": "Bang gia SH (1).pdf",
+             "d": "HDMB can A6 v1.docx", "e": "HDMB can A6 v2 final.docx", "f": "Quy che.pdf", "g": "Quy che.pdf"}
+    old = conflicts.older_versions(names)
+    assert old == {"a", "d"}          # c has no date: not comparable; f/g the same name, no version
+
+
+def test_rank_weights_prefer_the_latest_version():
+    from dr.core.answer import rank_weights
+    passages = {1: {"item_id": "a", "name": "Bang gia SH 01.03.2023.pdf", "path": ""},
+                2: {"item_id": "b", "name": "Bang gia SH 15.06.2024.pdf", "path": ""},
+                3: {"item_id": "x", "name": "Ban nhap ke hoach.pdf", "path": ""}}
+    w = rank_weights([1, 2, 3], passages)
+    assert w[2] == 1.0 and w[1] < 1.0
+    assert w[3] == 0.5                 # a draft keeps its own weight

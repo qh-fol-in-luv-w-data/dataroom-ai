@@ -88,6 +88,15 @@ def _weight(p: dict) -> float:
     return conflicts.source_weight(p.get("path", ""), p["name"])
 
 
+OLD_VERSION = 0.9      # another file of the same name with a later date / version is in the candidates
+
+
+def rank_weights(order: list[int], passages: dict[int, dict]) -> dict[int, float]:
+    """Each candidate's trust (_weight), a little lower when a later version of its file is a candidate too."""
+    older = conflicts.older_versions({passages[c]["item_id"]: passages[c]["name"] for c in order})
+    return {c: _weight(passages[c]) * (OLD_VERSION if passages[c]["item_id"] in older else 1.0) for c in order}
+
+
 def _date_note(p: dict) -> str:
     d = conflicts.doc_date(p["name"])
     return f", ngày {d:%d/%m/%Y}" if d else ""
@@ -591,10 +600,11 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
     if deps.rerank and order and not whole_doc and parts:
         # each part ranks its own candidates; the lists are interleaved so every part gets passages
         allowed_order = set(order)
+        weight = rank_weights(order, passages)
         ranked = []
         for qq in [q_search] + parts:
             cand = [c for c, _ in part_hits[qq] if c in allowed_order]
-            sc = [s * _weight(passages[c]) for s, c in
+            sc = [s * weight[c] for s, c in
                   zip(deps.rerank(qq, [_with_context(passages[c]) for c in cand]) if cand else [], cand)]
             ranked.append([c for _, c in sorted(zip(sc, cand), key=lambda x: -x[0])])
             top_rerank = max([top_rerank or 0.0, *sc]) if sc else top_rerank
@@ -607,7 +617,8 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
         trace.add("Rerank bge-reranker-v2-m3 theo từng phần", True, parts=len(parts),
                   top_score=round(top_rerank, 3) if top_rerank is not None else None)
     elif deps.rerank and order and not whole_doc:
-        scores = [s * _weight(passages[c]) for s, c in
+        weight = rank_weights(order, passages)
+        scores = [s * weight[c] for s, c in
                   zip(deps.rerank(q_search, [_with_context(passages[c]) for c in order]), order)]
         top_rerank = max(scores) if scores else None
         for c, s in zip(order, scores):
