@@ -108,3 +108,69 @@ def test_table_row_claim_may_use_header_units_but_not_another_rows_name():
     plain = {21: {**table[20], "kind": "text"}}                       # not a table: header rule does not apply
     kept, dropped = check(ok, {"D1": 21}, plain)
     assert not kept
+
+
+# ---- named codes (SH09, GJDC): only real codes, matched against the passage's text AND its file
+def test_company_type_abbreviations_are_not_codes():
+    p = {1: {"chunk_id": 1, "text": "CÔNG TY TNHH TM DV SAO MAI\nĐịa chỉ: 12 Lê Lợi"},
+         2: {"chunk_id": 2, "text": "Vốn điều lệ của công ty là 5.000.000.000 đồng."}}
+    claim = {"text": "Vốn điều lệ là 5.000.000.000 đồng.",
+             "citations": [{"doc": "D2", "quote": "Vốn điều lệ của công ty là 5.000.000.000 đồng."}]}
+    kept, dropped = check([claim], {"D1": 1, "D2": 2}, p, "Công ty TNHH TM DV Sao Mai có vốn điều lệ bao nhiêu?")
+    assert kept and not dropped
+
+
+def test_unaccented_word_from_a_file_name_is_not_a_code():
+    # the question copies an upper-case, unaccented file name ("BIEN BAN GIAO NHAN"); "giao" is an ordinary word
+    p = {1: {"chunk_id": 1, "text": "Số căn hộ bên mua đã nhận: 12 căn."},
+         2: {"chunk_id": 2, "text": "Kế hoạch giao hàng tháng 3."}}
+    claim = {"text": "Bên mua đã nhận 12 căn hộ.", "citations": [{"doc": "D1", "quote": "Số căn hộ bên mua đã nhận: 12 căn"}]}
+    kept, dropped = check([claim], {"D1": 1, "D2": 2}, p, "Theo BIEN BAN GIAO NHAN, bao nhiêu căn hộ được bàn giao?")
+    assert kept and not dropped
+
+
+def test_named_code_may_come_from_the_cited_passages_file_name():
+    p = {1: {"chunk_id": 1, "text": "Đơn giá thi công: 1.250.000 đồng/m2.", "name": "PVC - Bao gia thi cong.pdf",
+             "path": "/sites/x/Du an/PVC/PVC - Bao gia thi cong.pdf"},
+         2: {"chunk_id": 2, "text": "Ống PVC loại D90 và phụ kiện.", "name": "Vat tu.xlsx", "path": "/sites/x/Vat tu.xlsx"}}
+    claim = {"text": "Đơn giá thi công là 1.250.000 đồng/m2.",
+             "citations": [{"doc": "D1", "quote": "Đơn giá thi công: 1.250.000 đồng/m2."}]}
+    kept, dropped = check([claim], {"D1": 1, "D2": 2}, p, "Đơn giá thi công trong báo giá PVC là bao nhiêu?")
+    assert kept and not dropped
+    # the same figure cited from a file that is not about PVC at all is still refused
+    p[1] = {**p[1], "name": "Bao gia.pdf", "path": "/sites/x/Bao gia.pdf"}
+    kept, dropped = check([claim], {"D1": 1, "D2": 2}, p, "Đơn giá thi công trong báo giá PVC là bao nhiêu?")
+    assert not kept and "PVC" in dropped[0][1]
+
+
+def test_trailing_hyphen_of_a_file_code_is_dropped():
+    p = {1: {"chunk_id": 1, "text": "Giá trị quyết toán: 3.420.000.000 đồng.", "name": "TTCU-03 Quyet toan.pdf"},
+         2: {"chunk_id": 2, "text": "Danh mục hồ sơ TTCU-01, TTCU-02."}}
+    claim = {"text": "Giá trị quyết toán là 3.420.000.000 đồng.",
+             "citations": [{"doc": "D1", "quote": "Giá trị quyết toán: 3.420.000.000 đồng."}]}
+    kept, dropped = check([claim], {"D1": 1, "D2": 2}, p, "Giá trị quyết toán của hồ sơ TTCU- là bao nhiêu?")
+    assert kept and not dropped
+    assert all("TTCU-" not in r for _, r in dropped)
+
+
+def test_hyphenated_code_named_by_the_question_is_enforced():
+    p = {1: {"chunk_id": 1, "text": "Hợp đồng CTG-01: giá trị 2.100.000.000 đồng."},
+         2: {"chunk_id": 2, "text": "Hợp đồng CTG-02: giá trị 1.800.000.000 đồng."}}
+    wrong = {"text": "Giá trị hợp đồng CTG-01 là 1.800.000.000 đồng.",
+             "citations": [{"doc": "D2", "quote": "Hợp đồng CTG-02: giá trị 1.800.000.000 đồng."}]}
+    kept, dropped = check([wrong], {"D1": 1, "D2": 2}, p, "Giá trị hợp đồng CTG-01 là bao nhiêu?")
+    assert not kept and "CTG-01" in dropped[0][1]
+    right = {"text": "Giá trị hợp đồng CTG-01 là 2.100.000.000 đồng.",
+             "citations": [{"doc": "D1", "quote": "Hợp đồng CTG-01: giá trị 2.100.000.000 đồng."}]}
+    assert check([right], {"D1": 1, "D2": 2}, p, "Giá trị hợp đồng CTG-01 là bao nhiêu?")[0]
+
+
+def test_claim_may_use_a_name_from_its_cited_file():
+    p = {1: {"chunk_id": 1, "text": "Tổng mức đầu tư: 450 tỷ đồng.", "name": "Bao cao.pdf",
+             "context": "CT Group › LEMAN PLAZA › Bao cao.pdf"},
+         2: {"chunk_id": 2, "text": "Tòa LEMAN PLAZA cao 30 tầng."}}
+    claim = {"text": "Tổng mức đầu tư LEMAN PLAZA là 450 tỷ đồng.",
+             "citations": [{"doc": "D1", "quote": "Tổng mức đầu tư: 450 tỷ đồng."}]}
+    kept, dropped = check([claim], {"D1": 1, "D2": 2}, p, "Tổng mức đầu tư là bao nhiêu?")
+    assert kept and not dropped
+

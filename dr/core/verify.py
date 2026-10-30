@@ -131,7 +131,7 @@ def check(raw_claims: list[dict], labels: dict[str, int], passages: dict[int, di
     kept: list[Claim] = []
     dropped: list[tuple[dict, str]] = []
     given = norm(" ".join(p["text"] for p in passages.values()))
-    given_words = set(given.split())
+    upper = _upper_tokens(" ".join(p["text"] for p in passages.values()))
     for rc in raw_claims:
         text = (rc.get("text") or "").strip()
         cits = rc.get("citations") or []
@@ -166,19 +166,26 @@ def check(raw_claims: list[dict], labels: dict[str, int], passages: dict[int, di
         # a name the answer gives (an agency, a unit code) must be in its own quotes when the documents
         # use it: a figure copied from one table row under another row's name passes the number check
         quoted = norm(" ".join(g.quote for g in good))
+        # where each cited passage sits (file name, folders): a passage of "PVC - Báo giá.pdf" is about PVC
+        # although its text never says so
+        about = norm(" ".join(" ".join([passages[g.chunk_id]["text"], passages[g.chunk_id].get("name") or "",
+                                        passages[g.chunk_id].get("path") or "",
+                                        passages[g.chunk_id].get("context") or ""]) for g in good))
         # a code the question names (SH09, GJDC) that the documents use: the answer must come from a passage
         # about it, not a figure from another unit's contract that happens to fit the sentence
-        named = [t for t in _CODES.findall(question) if t not in _CODE_STOP and norm(t) in given_words]
-        if named and not any(norm(t) in norm(passages[g.chunk_id]["text"]).split() for t in named for g in good):
+        named = [t for t in codes(question, upper) if _has(t, given)]
+        if named and not any(_has(t, about) for t in named):
             dropped.append((rc, f"câu trích không thuộc tài liệu về {', '.join(named)}"))
             continue
-        asked = norm(question).split()        # the subject the user named (SH09) may be left out of the quote
+        asked = norm(question)                # the subject the user named (SH09) may be left out of the quote
         # a scanned table names its units and columns (MW, COD) once, in its header row: a claim read
         # from one row may use them although the row itself does not
         header = norm(" ".join(passages[g.chunk_id]["text"].split("\n", 1)[0] for g in good
-                               if passages[g.chunk_id].get("kind") == "table")).split()
-        wrong = [t for t in _CODES.findall(text) if t not in _CODE_STOP and norm(t) in given_words
-                 and norm(t) not in quoted.split() and norm(t) not in asked and norm(t) not in header]
+                               if passages[g.chunk_id].get("kind") == "table"))
+        place = norm(" ".join(" ".join([passages[g.chunk_id].get("name") or "", passages[g.chunk_id].get("context") or ""])
+                              for g in good))
+        wrong = [t for t in codes(text, upper) if _has(t, given)
+                 and not any(_has(t, s) for s in (quoted, asked, header, place))]
         if wrong:
             dropped.append((rc, f"tên trong câu trả lời không có trong câu trích ({', '.join(wrong)})"))
             continue
@@ -188,7 +195,42 @@ def check(raw_claims: list[dict], labels: dict[str, int], passages: dict[int, di
 
 _CODES = re.compile(r"\b(?=[A-Z0-9-]*[A-Z])[A-Z][A-Z0-9-]{1,}\b")       # EZ, GJDC, BNF, SH09, CTG-01
 _CODE_STOP = {"VAT", "VND", "USD", "CGI", "PR", "KOL", "KOLS", "IPO", "TP", "HCM", "SMS", "LCD", "OOH", "TVC", "BOD",
-              "NT", "HĐ", "CT", "QĐ", "TT", "PCCC", "MEP", "CEO", "FB", "GĐ", "KH", "DA", "PDF", "AI", "ID", "OK"}
+              "NT", "HĐ", "CT", "QĐ", "TT", "PCCC", "MEP", "CEO", "FB", "GĐ", "KH", "DA", "PDF", "AI", "ID", "OK",
+              # the kind of company a name carries (Công ty TNHH TM DV …), not a code of one
+              "TNHH", "MTV", "TM", "DV", "CP", "CTCP", "JSC", "CO", "LTD", "CN", "VPĐD", "VPDD", "XNK", "SX", "XD",
+              "DVTM", "TMDV", "SXTM", "TMSX", "TMDVXD", "ĐT", "DT", "PT", "PTDT"}
+_DISTRICT = re.compile(r"^[QP]\d{1,2}$")             # Q3, P12: a district or ward, not a code
+
+
+def _upper_tokens(text: str) -> set[str]:
+    """Upper-case tokens of the passages (and their hyphen-separated parts) that are not also used as an
+    ordinary lower-case word there: GJDC, MW are; GIAO is not when the text says "bàn giao"."""
+    lower = set(re.findall(r"\b[a-z]{2,}\b", text))
+    out = set()
+    for t in _CODES.findall(text):
+        for x in {t.strip("-"), *t.split("-")}:
+            if len(x) >= 2 and x.lower() not in lower:
+                out.add(x)
+    return out
+
+
+def codes(text: str, upper: set[str]) -> list[str]:
+    """The codes a text names: a token with a digit or a hyphen inside (SH09, CTG-01), or an upper-case token the
+    passages use as such (GJDC). Company kinds (TNHH, TM) and upper-case words copied from file names (GIAO,
+    PLAZA when the passages never write it in capitals) are not codes; a trailing hyphen (TTCU-) is dropped."""
+    out = []
+    for t in _CODES.findall(text):
+        t = t.strip("-")
+        if len(t) < 2 or t in _CODE_STOP or _DISTRICT.match(t):
+            continue
+        if re.search(r"\d", t) or "-" in t or t in upper:
+            out.append(t)
+    return out
+
+
+def _has(code: str, normed: str) -> bool:
+    """The code occurs as whole words of a norm()-ed text (CTG-01 is the two words 'ctg 01' there)."""
+    return f" {norm(code)} " in f" {normed} "
 
 
 # ------------------------------------------------------------------ number meaning (DR_BINDING)
