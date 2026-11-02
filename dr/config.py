@@ -93,6 +93,10 @@ class Settings:
     vote: int = int(_env("DR_VOTE", "1"))
     fewshot: bool = _env("DR_FEWSHOT", "0") == "1"
     llm_fallback: str = _env("DR_LLM_FALLBACK", "")
+    # DR_THINK: answer styles (fact,multi,table…) for which qwen3 reasons before answering ("thinking" mode); off by
+    # default: qwen3:4b writes ~1,000-2,000 thinking tokens, tens of seconds per question on an M3 Pro
+    think: str = _env("DR_THINK", "")
+    think_tokens: int = int(_env("DR_THINK_TOKENS", "3000"))
     # OCR: PaddleOCR-VL-1.6 served by mlx-vlm on the Apple GPU; PP-OCRv5 latin as fallback.
     ocr_server_url: str = _env("DR_OCR_SERVER", "http://127.0.0.1:8111/")
     ocr_vl_model: str = _env("DR_OCR_VL_MODEL", str(Path.home() / ".paddlex/official_models/PaddleOCR-VL-1.6"))

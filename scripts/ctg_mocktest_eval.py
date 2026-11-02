@@ -178,6 +178,7 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--report-only", action="store_true", help="rewrite REPORT.md of an existing run")
     ap.add_argument("--only", default="", help="question types to ask, e.g. fact,oos")
+    ap.add_argument("--ids", default="", help="file with the question ids to ask (a subset run, e.g. one failure group)")
     ap.add_argument("--record-relevance", action="store_true",
                     help="calibration: the on-topic check keeps every claim, and each claim's reranker score, term "
                          "overlap and whether it holds the expected answer are recorded (numbers only)")
@@ -187,6 +188,9 @@ def main() -> int:
         items = items[:args.limit]
     if args.only:
         items = [it for it in items if it["type"] in args.only.split(",")]
+    if args.ids:
+        want = set(Path(args.ids).read_text().split())
+        items = [it for it in items if it["id"] in want]
     if args.record_relevance:
         settings.relevance_min, settings.relevance_overlap, settings.relevance_evidence = 1e-9, 0.0, 0.0
     out = Path(args.test).parent / f"run-{args.tag}"

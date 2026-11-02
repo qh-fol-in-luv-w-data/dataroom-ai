@@ -218,10 +218,15 @@ _cache_lock = threading.Lock()
 stats = {"hits": 0, "misses": 0}
 
 
+def _thinks(style: str) -> bool:
+    """Does DR_THINK name this answer style?"""
+    return style in {x.strip() for x in settings.think.split(",") if x.strip()}
+
+
 def _key(kind: str, question: str, passages: list[dict], lang: str, model: str | None = None) -> str:
     h = hashlib.sha256()
     q = re.sub(r"\s+", " ", question.strip().lower()).rstrip(" ?？.!")
-    methods = f"{settings.doc_type}{settings.two_stage}{settings.fewshot}"
+    methods = f"{settings.doc_type}{settings.two_stage}{settings.fewshot}{_thinks(kind.rsplit(':', 2)[-2] if kind.count(':') >= 2 else '')}"
     for part in (kind, model or settings.llm_model, methods, lang, q, *(f'{p["chunk_id"]}\x00{p["text"]}' for p in passages)):
         h.update(part.encode() + b"\x1f")
     return h.hexdigest()
@@ -266,7 +271,7 @@ def last_stats() -> dict:
 
 
 def _chat(system: str, prompt: str, schema: dict, timeout: float, max_tokens: int = 600, model: str | None = None,
-          sample: int = 0) -> dict:
+          sample: int = 0, think: bool = False) -> dict:
     # num_predict bounds the answer: a constrained-JSON generation that never closes would otherwise
     # run until the context is full (seen once in 1000 red-team questions: 300 s, then a timeout)
     model = model or settings.llm_model
@@ -281,13 +286,17 @@ def _chat(system: str, prompt: str, schema: dict, timeout: float, max_tokens: in
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
     }
     if model.startswith("qwen3"):
-        body["think"] = False         # thinking mode: many times the tokens, and the JSON schema already shapes the answer
+        # thinking mode: many times the tokens; only for the styles DR_THINK names (the thinking counts in num_predict)
+        body["think"] = think
+        if think:
+            body["options"]["num_predict"] = max_tokens + settings.think_tokens
     r = httpx.post(f"{settings.ollama_url}/api/chat", timeout=timeout, json=body)
     r.raise_for_status()
     d = r.json()
     # how the time split between reading the prompt and writing the answer (shown in the trace)
     _stats.value = {"prompt_tokens": d.get("prompt_eval_count"), "prefill_ms": int(d.get("prompt_eval_duration", 0) / 1e6),
-                    "answer_tokens": d.get("eval_count"), "decode_ms": int(d.get("eval_duration", 0) / 1e6)}
+                    "answer_tokens": d.get("eval_count"), "decode_ms": int(d.get("eval_duration", 0) / 1e6),
+                    **({"thinking_chars": len(d["message"].get("thinking") or "")} if think else {})}
     try:
         return json.loads(d["message"]["content"])
     except json.JSONDecodeError:
@@ -328,8 +337,9 @@ def answer_json(question: str, passages: list[dict], lang: str = "vi", style: st
         if settings.two_stage and style in ("fact", "multi"):
             given = pick_sentences(question, passages, model=model, sample=sample) or passages
         prompt, labels, sentences = build_prompt(question, given, lang)
-        raw = _chat(system, prompt, SCHEMA, timeout, max_tokens=600 if style == "fact" else 1500, model=model,
-                    sample=sample)
+        think = _thinks(style)
+        raw = _chat(system, prompt, SCHEMA, timeout * 3 if think else timeout,
+                    max_tokens=600 if style == "fact" else 1500, model=model, sample=sample, think=think)
         claims = []
         for c in raw.get("claims") or []:
             if not isinstance(c, dict):
