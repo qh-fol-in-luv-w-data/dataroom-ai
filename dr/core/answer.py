@@ -30,6 +30,8 @@ NO_ROLE_MESSAGE = "Tài khoản của bạn chưa được cấp quyền sử d�
 NO_SUMMARY_ROLE_MESSAGE = "Tài khoản của bạn chưa được cấp quyền tóm tắt tài liệu."
 FOCUSED_PASSAGES = 3   # retry size when the model finds nothing although the reranker found a strong match
 RETRY_MIN_RERANK = 0.5
+ECHO_HINT = ("\nLưu ý: lần trả lời trước chỉ chép lại câu hỏi. Hãy nêu đúng điều được hỏi (con số, tên, ngày…) "
+             "lấy từ câu được dẫn; nếu không câu nào có thì trả no_answer.")
 
 
 @dataclass
@@ -881,6 +883,18 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
         dropped += dropped2
         trace.add(f"Thử lại có trọng tâm ({FOCUSED_PASSAGES} đoạn đầu) + kiểm chứng", True, kept=len(kept),
                   dropped_reasons=[r for _, r in dropped2])
+    if not kept and not det and plan.intent == "fact" and any(r == verify.ECHO_REASON for _, r in dropped):
+        # the model said the question again instead of answering it: once more on the same passages, told so
+        try:
+            raw, labels = _call(llm_call, q_llm + ECHO_HINT, llm_in, lang=lang, style=plan.intent,
+                                max_claims=plan.claims)
+        except Exception as e:
+            trace.add(f"LLM {settings.llm_model} không phản hồi (lần thử lại)", False, error=type(e).__name__)
+            raw, labels = {"claims": []}, {}
+        kept, dropped3 = verify.check(raw.get("claims", []), labels, sel_passages, question)
+        dropped += dropped3
+        trace.add("Thử lại vì câu trả lời lặp câu hỏi + kiểm chứng", True, kept=len(kept),
+                  dropped_reasons=[r for _, r in dropped3])
     if not kept and not det and settings.llm_fallback and settings.llm_fallback != settings.llm_model:
         # nothing of the small model's answer held up: the larger model reads the same passages once
         try:

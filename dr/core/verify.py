@@ -159,7 +159,7 @@ def check(raw_claims: list[dict], labels: dict[str, int], passages: dict[int, di
             dropped.append((rc, "con số trong câu trả lời không khớp câu trích"))
             continue
         if echoes(text, question, [g.quote for g in good]):
-            dropped.append((rc, "câu trả lời chỉ lặp lại câu hỏi"))
+            dropped.append((rc, ECHO_REASON))
             continue
         if settings.binding:
             wrong_kind = unbound(text, [g.quote for g in good], q_nums)
@@ -198,6 +198,7 @@ def check(raw_claims: list[dict], labels: dict[str, int], passages: dict[int, di
 
 # ------------------------------------------------------------------ a claim that only repeats the question
 ECHO_MIN = 0.75
+ECHO_REASON = "câu trả lời chỉ lặp lại câu hỏi"
 _YES_NO = re.compile(r"\b(?:không|chưa|phải không|đúng không|hay không|có phải)\s*\??\s*$")
 
 

@@ -44,3 +44,23 @@ def test_question_the_cited_document_answers_is_kept(env):
     res = answer.ask(tenant, ix, "inv-b1", ["Investor.AI"], "Doanh thu năm 2025 trong báo cáo chung là bao nhiêu?", DEPS)
     st = _step(res)
     assert st and st["dropped"] == 0 and not res["refused"]
+
+
+def echoing_llm(question, passages, lang="vi"):
+    """Says the question again unless told not to (what qwen3:4b did on 7 + 13 mock-test questions)."""
+    labels = {f"D{i}": p["chunk_id"] for i, p in enumerate(passages, start=1)}
+    for label, p in zip(labels, passages):
+        if "1.250" in p["text"]:
+            quote = "Doanh thu năm 2025 là 1.250 tỷ đồng."
+            text = ("Doanh thu năm 2025 là 1.250 tỷ đồng." if "chép lại câu hỏi" in question
+                    else "Doanh thu năm 2025 trong báo cáo chung là.")
+            return {"claims": [{"text": text, "citations": [{"doc": label, "quote": quote}]}], "no_answer": False}, labels
+    return {"claims": [], "no_answer": True}, labels
+
+
+def test_answer_that_only_repeats_the_question_is_asked_again(env):
+    tenant, _, ix = env
+    res = answer.ask(tenant, ix, "inv-b1", ["Investor.AI"], "Doanh thu năm 2025 trong báo cáo chung là bao nhiêu?",
+                     answer.Deps(llm=echoing_llm))
+    assert any(s["step"].startswith("Thử lại vì câu trả lời lặp câu hỏi") for s in res["trace"])
+    assert not res["refused"] and "1.250" in res["claims"][0]["text"]
