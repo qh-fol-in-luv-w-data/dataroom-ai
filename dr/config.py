@@ -93,6 +93,9 @@ class Settings:
     vote: int = int(_env("DR_VOTE", "1"))
     fewshot: bool = _env("DR_FEWSHOT", "0") == "1"
     llm_fallback: str = _env("DR_LLM_FALLBACK", "")
+    # DR_EXPAND_TOP_FILE=N: a fact question also offers the sentence focus up to N more chunks of the best-ranked
+    # file (most question key terms first): the answer often sits in another part of the file that ranked first
+    expand_top_file: int = int(_env("DR_EXPAND_TOP_FILE", "0"))
     # DR_THINK: answer styles (fact,multi,table…) for which qwen3 reasons before answering ("thinking" mode); off by
     # default: qwen3:4b writes ~1,000-2,000 thinking tokens, tens of seconds per question on an M3 Pro
     think: str = _env("DR_THINK", "")

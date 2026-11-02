@@ -1,5 +1,6 @@
 """Sentence focus: the n sentences the reranker likes best, plus the few the answer usually sits in."""
 from dr.core.answer import Deps, Trace, focus_sentences
+from tests.test_gates import env  # noqa: F401,E402
 
 
 def _deps(scores: dict[str, float]) -> Deps:
@@ -57,3 +58,26 @@ def test_long_table_row_is_cut_around_what_the_question_asks():
     # with nothing of the question in it, the row keeps its beginning as before
     out = focus_sentences("Ai ký biên bản?", [{"chunk_id": 1, "text": row}], _deps({"Hạng mục": 0.5}), Trace(), n=3)
     assert _kept(out).startswith("Hạng mục phụ số 1:")
+
+
+def test_expand_top_file_offers_its_other_chunks(env, monkeypatch):
+    """DR_EXPAND_TOP_FILE: the best file's other chunks reach the model (here c1 has a second chunk)."""
+    from dr.config import settings
+    from dr.core import answer
+    from dr.db import pg
+    tenant, _, ix = env
+    with pg.admin() as c:
+        site, ctag = c.execute("SELECT site_id, ctag FROM items WHERE item_id = 'c1'").fetchone()
+        c.execute("INSERT INTO chunks(item_id, site_id, ctag, ordinal, locator, text, text_folded, converter, tsv, tlen) "
+                  "VALUES ('c1', %s, %s, 1, 'Trang 2', 'Lợi nhuận sau thuế năm 2025 là 210 tỷ đồng.', "
+                  "'loi nhuan sau thue nam 2025 la 210 ty dong.', 'text', ''::tsvector, 9)", (site, ctag))
+        c.commit()
+    seen = {}
+
+    def llm(question, passages, lang="vi"):
+        seen["texts"] = [p["text"] for p in passages]
+        return {"claims": [], "no_answer": True}, {}
+    monkeypatch.setattr(settings, "expand_top_file", 10)
+    answer.ask(tenant, ix, "inv-b1", ["Investor.AI"], "Doanh thu năm 2025 trong báo cáo chung là bao nhiêu?",
+               answer.Deps(llm=llm))
+    assert any("210 tỷ" in t for t in seen["texts"])

@@ -789,6 +789,16 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
         selected = select_passages(order, passages, set(chosen), n_pass, n_pass if exact_named else plan.per_file)
     if not selected:
         return nothing_found()
+    if settings.expand_top_file and plan.intent == "fact" and not whole_doc:
+        # the best-ranked file's other chunks (same version, RLS) join the sentence focus, not the passage slots
+        top = passages[selected[0]]
+        more = [c for c in titled_chunks(oid, [top["item_id"]], q_search, limit=settings.expand_top_file)
+                if c not in set(selected)]
+        passages.update(gates.fetch_passages(oid, [c for c in more if c not in passages]))
+        more = [c for c in more if c in passages and passages[c]["ctag"] == top["ctag"]]
+        if more:
+            selected = selected + more
+            trace.add("Đọc thêm các đoạn khác của tài liệu đứng đầu (để chọn câu)", True, chunks=len(more))
     sel_passages = {c: passages[c] for c in selected}
     flagged = [c for c in selected if passages[c]["injection_flag"]]
     if flagged:
