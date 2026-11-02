@@ -200,3 +200,16 @@ def test_yes_no_answer_may_repeat_the_question():
     claim = {"text": "Dự án Sao Mai Riverside có hồ bơi.",
              "citations": [{"doc": "D1", "quote": "Dự án Sao Mai Riverside có hồ bơi tràn bờ trên tầng thượng."}]}
     assert check([claim], {"D1": 1}, p, "Dự án Sao Mai Riverside có hồ bơi không?")[0]
+
+
+def test_leading_zeros_do_not_change_a_number():
+    p = {1: {"chunk_id": 1, "text": "Thời hạn bảo hành là 05 năm kể từ ngày bàn giao."}}
+    claim = {"text": "Thời hạn bảo hành là 5 năm.",
+             "citations": [{"doc": "D1", "quote": "Thời hạn bảo hành là 05 năm kể từ ngày bàn giao."}]}
+    assert check([claim], {"D1": 1}, p, "Thời hạn bảo hành là bao lâu?")[0]
+    # but a decimal is not its digits without the zero: 0,5 năm is not 5 năm
+    p2 = {1: {"chunk_id": 1, "text": "Thời hạn bảo hành là 0,5 năm kể từ ngày bàn giao."}}
+    bad = {"text": "Thời hạn bảo hành là 5 năm.",
+           "citations": [{"doc": "D1", "quote": "Thời hạn bảo hành là 0,5 năm kể từ ngày bàn giao."}]}
+    kept, dropped = check([bad], {"D1": 1}, p2, "Thời hạn bảo hành là bao lâu?")
+    assert not kept and "con số" in dropped[0][1]

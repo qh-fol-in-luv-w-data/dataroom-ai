@@ -91,8 +91,8 @@ def _same_digits(a: str, b: str) -> bool:
     """Same digits, separators aside; a decimal written with fewer trailing zeros (2.786,9 / 2.786,90) too,
     but not when a last group of exactly three digits makes it a thousands group ('4.000' is not '4.0')."""
     da, db = re.sub(r"\D", "", a), re.sub(r"\D", "", b)
-    if da == db:
-        return True
+    if da == db or (da.lstrip("0") == db.lstrip("0") and da.lstrip("0")):
+        return True                   # leading zeros ('05 năm' / '5 năm'); the values are compared too
     last = [re.split(r"[.,]", x)[-1] for x in (a, b)]
     return (da.rstrip("0") == db.rstrip("0") and all(re.search(r"[.,]", x) for x in (a, b))
             and all(len(g) != 3 for g in last))
