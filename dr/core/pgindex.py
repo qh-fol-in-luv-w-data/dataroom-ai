@@ -20,12 +20,13 @@ from datetime import date
 
 import numpy as np
 
+from dr.config import settings
 from dr.core.conflicts import doc_date
 from dr.core.index import tokens
 from dr.db import pg
 
 EXACT_LIMIT = 20_000     # readable chunks at or below this → exact search
-CAND_TARGET = 1_500      # rarest query terms are used to pick candidates until ~this many matches
+CAND_TARGET = 1_500      # rarest query terms are used to pick candidates until ~this many matches (DR_BM25_CANDIDATES)
 CAND_CAP = 20_000        # hard cap on index candidates (before the permission filter)
 SCORE_CAP = 4_000        # readable candidates scored per question
 AI_ITEMS = ("i.status = 'indexed' AND i.ai_use IN ('Allowed','OnPremOnly') "
@@ -166,7 +167,7 @@ class PgSearchIndex:
         # lists. Common terms still contribute to the score of every candidate below.
         pick, est = [], 0
         for t, df in stats:
-            if pick and est + df > CAND_TARGET:
+            if pick and est + df > (settings.bm25_candidates or CAND_TARGET):
                 break
             pick.append(t)
             est += df
