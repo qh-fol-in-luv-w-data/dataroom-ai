@@ -182,6 +182,50 @@ def document_chunks(oid: str, codes: list[str], files: list[str], limit: int = 4
     return [r[0] for r in rows]
 
 
+NAMED_CHUNKS = 40       # chunks of a document the question names by title that join the candidates
+
+
+def _fold_name(s: str) -> str:
+    # a file extension (".pdf", ".xlsx") is dropped, a date at the end of a title (".2023") is not
+    return re.sub(r"[^a-z0-9]+", " ", unidecode(re.sub(r"\.[A-Za-z][A-Za-z0-9]{1,4}$", "", s.strip())).lower()).strip()
+
+
+def titled_items(oid: str, titles: list[str], limit: int = 8) -> dict[str, bool]:
+    """Files this user may read (RLS) whose name is a title the question quotes -> True for the very name (file
+    extension, case, accents and punctuation aside), False when the name only contains a title of 12+ characters."""
+    from dr.db import pg
+    want = [t for t in (_fold_name(t) for t in titles) if t]
+    if not want:
+        return {}
+    try:
+        with pg.as_principal(oid) as cur:
+            rows = cur.execute("SELECT item_id, name FROM items WHERE status = 'indexed'").fetchall()
+    except Exception:            # no database (unit tests on stubs): no title route
+        return {}
+    out: dict[str, bool] = {}
+    for it, name in rows:
+        stem = _fold_name(name or "")
+        if stem in want:
+            out[it] = True
+        elif any(len(t) >= 12 and t in stem for t in want):
+            out.setdefault(it, False)
+    exact = [it for it, ex in out.items() if ex]
+    return {it: True for it in exact[:limit]} if exact else dict(list(out.items())[:limit])
+
+
+def titled_chunks(oid: str, items: list[str], question: str, limit: int = NAMED_CHUNKS) -> list[int]:
+    """The current chunks (RLS) of the named files most likely to hold the answer: the most key terms of the
+    question first, reading order after that."""
+    from dr.db import pg
+    with pg.as_principal(oid) as cur:
+        rows = cur.execute("SELECT c.chunk_id, c.text FROM chunks c JOIN items i ON i.item_id = c.item_id AND "
+                           "i.ctag = c.ctag WHERE c.item_id = ANY(%s) ORDER BY c.item_id, c.ordinal LIMIT 2000",
+                           (items,)).fetchall()
+    terms = intent.key_terms(question)
+    ranked = sorted(enumerate(rows), key=lambda x: (-len(terms & intent.key_terms(x[1][1])), x[0]))
+    return [r[0] for _, r in ranked[:limit]]
+
+
 def item_texts(oid: str, item_ids: set[str], limit: int = 2000) -> dict[str, str]:
     """The current text of each document, its chunks in reading order, as far as this user can read it (RLS)."""
     from dr.db import pg
@@ -608,6 +652,7 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
 
     trace.stage("search")
     versions: dict[int, list[int]] = {}      # representative chunk -> other copies / versions of its text
+    named: dict[str, bool] = {}
     if whole_doc:
         hits = [(c, 1.0) for c in whole_doc]
         trace.add("Đọc toàn bộ tài liệu được chọn (RLS)" if item_id else "Đọc toàn bộ tài liệu được nêu tên (RLS)",
@@ -625,6 +670,15 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
                 part_hits[qq], info = index.search(set(allowed), qq, v, k=k), {}
             for rep, others in info.pop("versions", {}).items():     # other versions: for the conflict check
                 versions.setdefault(rep, []).extend(others)
+        # a document the question names by title ("Theo tài liệu “…”: …"): core_question() dropped the title as a
+        # preface, so its chunks join the candidates of every part; with the very file name, only it is read
+        named = titled_items(oid, intent.named_titles(question)) if not plan.verbatim else {}
+        if named:
+            extra = titled_chunks(oid, list(named), q_search)
+            for qq in part_hits:
+                part_hits[qq] = [(c, 1.0) for c in extra] + [h for h in part_hits[qq] if h[0] not in set(extra)]
+            trace.add("Câu hỏi nêu tên tài liệu → tìm trong tài liệu đó", True, files=len(named),
+                      exact=sum(named.values()), chunks=len(extra))
         hits, have = [], set()
         for hs in part_hits.values():
             hits += [h for h in hs if h[0] not in have and not have.add(h[0])]
@@ -634,6 +688,9 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
                   parts=len(parts), **info)
     passages = gates.fetch_passages(oid, [cid for cid, _ in hits])
     order = [cid for cid, _ in hits if cid in passages]
+    exact_named = {it for it, ex in (named if not whole_doc else {}).items() if ex}
+    if exact_named and any(passages[c]["item_id"] in exact_named for c in order):
+        order = [c for c in order if passages[c]["item_id"] in exact_named]
     if other:
         # never answer a question about group X from the asker's own group documents
         own = len(order)
@@ -727,7 +784,7 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
     if whole_doc:
         selected = spread([c for c in order if passages[c]["item_id"] in set(chosen)], 60)
     else:
-        selected = select_passages(order, passages, set(chosen), n_pass, plan.per_file)
+        selected = select_passages(order, passages, set(chosen), n_pass, n_pass if exact_named else plan.per_file)
     if not selected:
         return nothing_found()
     sel_passages = {c: passages[c] for c in selected}

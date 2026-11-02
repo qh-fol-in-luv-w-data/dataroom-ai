@@ -72,6 +72,14 @@ def classify(question: str) -> str:
     return "fact"
 
 
+_TITLE = re.compile(r"[“\"«]([^”\"»\n]{2,200})[”\"»]")
+
+
+def named_titles(question: str) -> list[str]:
+    """Document titles the question quotes: 'Theo tài liệu “Bảng giá SH 2024”: …'."""
+    return [m.group(1).strip() for m in _TITLE.finditer(question) if m.group(1).strip()]
+
+
 def named_documents(question: str) -> tuple[list[str], list[str]]:
     """Control codes and file names the question names."""
     return _CODE.findall(question), [m.group(0) for m in _FILE.finditer(question)]
