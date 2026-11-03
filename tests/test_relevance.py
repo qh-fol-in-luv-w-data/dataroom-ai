@@ -64,3 +64,21 @@ def test_answer_that_only_repeats_the_question_is_asked_again(env):
                      answer.Deps(llm=echoing_llm))
     assert any(s["step"].startswith("Thử lại vì câu trả lời lặp câu hỏi") for s in res["trace"])
     assert not res["refused"] and "1.250" in res["claims"][0]["text"]
+
+
+def test_name_terms_are_the_capitalised_words_after_the_first():
+    assert intent.name_terms("Dự án Sakura Riverside Đà Lạt có doanh thu bao nhiêu?") == {"sakura", "riverside", "lat"}
+    assert intent.name_terms("Doanh thu năm 2025 là bao nhiêu?") == set()
+    texts = ["Báo cáo Sakura Riverside Đà Lạt 2025", "Báo cáo dự án khác"]
+    assert intent.name_overlap("Dự án Sakura Riverside Đà Lạt có doanh thu bao nhiêu?", texts) == 1.0
+    assert intent.name_overlap("Dự án Sakura Riverside Đà Lạt có doanh thu bao nhiêu?", texts[1:]) == 0.0
+    assert intent.name_overlap("Doanh thu năm 2025 là bao nhiêu?", texts[1:]) == 1.0      # no name: nothing to check
+
+
+def test_question_naming_a_project_no_cited_document_mentions_is_not_answered(env):
+    """Most key terms of the question are in the shared report (evidence 5/6), but not the project it names."""
+    tenant, _, ix = env
+    res = answer.ask(tenant, ix, "inv-b1", ["Investor.AI"],
+                     "Doanh thu năm 2025 trong báo cáo chung của Sakura là bao nhiêu?", DEPS)
+    st = _step(res)
+    assert st and st["dropped"] == 1 and res["refused"]

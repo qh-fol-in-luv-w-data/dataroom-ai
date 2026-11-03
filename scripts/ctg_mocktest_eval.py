@@ -193,6 +193,7 @@ def main() -> int:
         items = [it for it in items if it["id"] in want]
     if args.record_relevance:
         settings.relevance_min, settings.relevance_overlap, settings.relevance_evidence = 1e-9, 0.0, 0.0
+        settings.relevance_names = 0.0
     out = Path(args.test).parent / f"run-{args.tag}"
     out.mkdir(parents=True, exist_ok=True)
     res_path = out / "results.jsonl"
@@ -239,7 +240,8 @@ def relevance_record(it: dict, r: dict) -> dict:
     if not st:
         return {"rel": [], "ovl": [], "claim_ans": [], "top_rerank": top}
     n = len(st["scores"])
-    return {"rel": st["scores"], "ovl": st["overlap"], "evidence": st.get("evidence", []), "top_rerank": top,
+    return {"rel": st["scores"], "ovl": st["overlap"], "evidence": st.get("evidence", []), "names": st.get("names", []),
+            "top_rerank": top,
             "claim_ans": [bool(it.get("answer")) and holds(it["answer"], c["text"]) for c in r["claims"][:n]]}
 
 

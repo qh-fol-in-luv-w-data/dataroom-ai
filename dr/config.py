@@ -59,6 +59,10 @@ class Settings:
     # project, so the two signals above vouched for it. Calibrated on the CT Group mock test (qwen3-fixcal,
     # whole cited documents): 0.7 cut 22/26 out-of-scope answers for 1 right answer lost of 207 (0.65: 21, 1; 0.75: 23, 2).
     relevance_evidence: float = float(_env("DR_RELEVANCE_EVIDENCE", "0.7"))
+    # ...and when no single cited document holds relevance_names of the question's proper-name terms (its
+    # capitalised words): fictional "Hạ Long Pearl Tower" shares "Long", "Tower" with real documents. On run
+    # qwen3-fix3a (whole cited documents): 0.8 left 0/9 out-of-scope answers and kept 249/250 right ones.
+    relevance_names: float = float(_env("DR_RELEVANCE_NAMES", "0.8"))
     llm_keep_alive: str = _env("DR_LLM_KEEP_ALIVE", "24h")    # keep the model loaded (Ollama unloads after 5 min)
     answer_cache: int = int(_env("DR_ANSWER_CACHE", "2000"))  # LLM outputs memoised by exact input; 0 = off
     # the app ingests new/changed files in a background thread; turn off while scripts/ingest.py runs a bulk load

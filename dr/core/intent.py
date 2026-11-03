@@ -106,6 +106,23 @@ def term_overlap(question: str, answer: str) -> float:
     return len(q & key_terms(answer)) / max(1, len(q))
 
 
+def name_terms(question: str) -> set[str]:
+    """Key terms of the proper names the question gives: its capitalised words, the first word aside
+    ("Dự án Sakura Riverside Đà Lạt …" -> sakura, riverside, lat)."""
+    words = re.findall(r"[^\W\d_]\w*", question)
+    return set().union(*(key_terms(w) for w in words[1:] if w[0].isupper())) if len(words) > 1 else set()
+
+
+def name_overlap(question: str, evidence: list[str]) -> float:
+    """The largest share of the question's proper-name terms that ONE cited document holds (1.0 when the
+    question names nothing): a question about "Hạ Long Pearl Tower" is not answered from a document that
+    has "Long" and another that has "Tower"."""
+    names = name_terms(question)
+    if not names:
+        return 1.0
+    return max([len(names & key_terms(t)) / len(names) for t in evidence] or [0.0])
+
+
 def evidence_overlap(question: str, evidence: list[str]) -> float:
     """Share of the question's key terms found in the documents a claim cites (their text and place), never in
     the claim itself: asked about a project the data room does not hold, the model writes that project's name

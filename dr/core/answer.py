@@ -934,17 +934,17 @@ def ask(tenant: FakeTenant, index: SearchIndex, oid: str, roles: list[str], ques
         # the cited documents themselves (whole text, folders, file name; read under RLS) must hold the question's
         # key terms: the claim's own words cannot vouch for it
         docs = item_texts(oid, {sel_passages[c.chunk_id]["item_id"] for cl in kept for c in cl.citations})
-        ev = [intent.evidence_overlap(q_search, [" ".join([docs.get(p["item_id"], p["text"]), p.get("context") or "",
-                                                           p.get("path") or ""])
-                                                 for p in (sel_passages[c.chunk_id] for c in cl.citations)])
-              for cl in kept]
+        cited = [[" ".join([docs.get(p["item_id"], p["text"]), p.get("context") or "", p.get("path") or ""])
+                  for p in (sel_passages[c.chunk_id] for c in cl.citations)] for cl in kept]
+        ev = [intent.evidence_overlap(q_search, c) for c in cited]
+        names = [intent.name_overlap(q_search, c) for c in cited]
         ok = [((r >= settings.relevance_min and o >= settings.relevance_overlap) if other else
                (r >= settings.relevance_min or o >= settings.relevance_overlap)) and e >= settings.relevance_evidence
-              for r, o, e in zip(rel, ovl, ev)]
+              and nm >= settings.relevance_names for r, o, e, nm in zip(rel, ovl, ev, names)]
         kept = [cl for cl, k in zip(kept, ok) if k]
         trace.add("Kiểm tra đúng trọng tâm câu hỏi", True, dropped=ok.count(False),
                   scores=[round(r, 3) for r in rel], overlap=[round(o, 2) for o in ovl],
-                  evidence=[round(e, 2) for e in ev])
+                  evidence=[round(e, 2) for e in ev], names=[round(n, 2) for n in names])
     # NLI is a secondary signal; a verbatim answer IS its quotes, so there is nothing to score
     if (deps.nli or deps.nli_many) and kept and not verbatim:
         trace.stage("verify")
