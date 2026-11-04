@@ -38,7 +38,7 @@ export DR_DATA=data/ctg DR_PGDATA=$HOME/.dr_ctg/pgdata DR_PG_PORT=55433 HF_HUB_O
 | 4. Đẩy lên SharePoint | `$V scripts/sp_upload.py --site https://27bbzr.sharepoint.com/sites/DSA --library "DataRoom AI Demo" --m365-config <…>/data/m365.json --token-cache <…>/data/.sp_token.json --src "data/AI Data Room"` | 8 luồng song song (~7 MB/s). `--show` xem thư viện, `--wipe --yes` xoá hết (vào thùng rác). Chạy lại thì chỉ đẩy phần còn thiếu. Đường dẫn quá 400 ký tự được rút gọn tên thư mục (dấu `~`) |
 | 5a. Bật OCR server | `make ocr-server` | PaddleOCR-VL-1.6 trên GPU (MLX), cổng 8111. **Phải chạy suốt lúc nạp** |
 | 5b. Nạp dữ liệu | `DR_OCR_ENGINE=vl DR_OCR_CROSSCHECK=0 $V scripts/ingest.py --workers 2 --shard 0/3` (và `1/3`, `2/3` ở 2 terminal khác) | Chạy lại thì tiếp từ chỗ dừng. Thứ tự: Word/Excel/PowerPoint → PDF → ảnh; pháp lý/tài chính/kỹ thuật trước marketing |
-| 6. Chạy app | khởi động cấu hình `ctg-dataroom` trong `.claude/launch.json`, mở http://localhost:8001 | Model chat mặc định `qwen3:4b` (`DR_LLM`) kèm kiểm tra nghĩa con số (`DR_BINDING=1`), chọn theo benchmark model × phương pháp (`docs/BENCHMARK_SERVER.md`) |
+| 6. Chạy app | khởi động app (cấu hình chạy `ctg-dataroom`), mở http://localhost:8001 | Model chat mặc định `qwen3:4b` (`DR_LLM`) kèm kiểm tra nghĩa con số (`DR_BINDING=1`), chọn theo benchmark model × phương pháp (`docs/BENCHMARK_SERVER.md`) |
 
 ### 1.3 Tài khoản và quyền
 

@@ -1,6 +1,6 @@
 # Runbook: cài đặt và chạy benchmark chéo model × phương pháp trên server
 
-> **Dành cho agent (Claude Code hoặc người vận hành) trên server.** Làm lần lượt từ bước 0 đến bước 8. Mỗi bước có lệnh **Kiểm tra**: chưa qua thì chưa sang bước sau. Gặp lỗi thì xem bảng ở mục 9 trước. Nếu vẫn không được, dừng lại và báo nguyên văn lỗi; không tự đổi code của pipeline để "cho chạy được".
+> **Dành cho người vận hành trên server.** Làm lần lượt từ bước 0 đến bước 8. Mỗi bước có lệnh **Kiểm tra**: chưa qua thì chưa sang bước sau. Gặp lỗi thì xem bảng ở mục 9 trước. Nếu vẫn không được, dừng lại và báo nguyên văn lỗi; không tự đổi code của pipeline để "cho chạy được".
 >
 > **Dữ liệu mật CT Group.** Bản dump và `tenant.json` chứa nội dung tài liệu và phân quyền thật.
 > - Không tải lên bất kỳ dịch vụ ngoài nào.
