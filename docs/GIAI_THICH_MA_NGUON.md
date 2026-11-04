@@ -1266,7 +1266,7 @@ Phần này mô tả "cửa ngõ" của hệ thống: máy chủ web (FastAPI) n
 
 ### `web/app.js`
 
-**Vai trò:** Toàn bộ giao diện người dùng, viết bằng JavaScript thuần (không framework, không bước build). Gồm màn hình đăng nhập (demo hoặc Microsoft), giao diện hỏi đáp kiểu Claude cho nhà đầu tư/nhân viên, khung "Nguồn & kiểm tra", và các trang quản trị phân quyền.
+**Vai trò:** Toàn bộ giao diện người dùng, viết bằng JavaScript thuần (không framework, không bước build). Gồm màn hình đăng nhập (demo hoặc Microsoft), giao diện hỏi đáp dạng chat cho nhà đầu tư/nhân viên, khung "Nguồn & kiểm tra", và các trang quản trị phân quyền.
 
 **Thành phần chính:**
 
